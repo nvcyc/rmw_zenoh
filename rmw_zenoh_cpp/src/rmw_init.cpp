@@ -33,6 +33,8 @@
 
 #include "rcpputils/scope_exit.hpp"
 
+#include "buffer_backend_loader.hpp"
+
 extern "C"
 {
 //==============================================================================
@@ -112,6 +114,15 @@ rmw_init(const rmw_init_options_t * options, rmw_context_t * context)
     context->actual_domain_id,
     std::string(options->enclave)
   );
+
+  // Initialize buffer backends for serialization
+  // This loads and registers all available buffer backends (CPU, CUDA, etc.)
+  try {
+    rmw_zenoh_cpp::initialize_buffer_backends();
+  } catch (const std::exception & e) {
+    // Non-fatal: buffer backends are optional for basic RMW functionality
+    // If no buffer backends are available, Buffer fields will fail to serialize
+  }
 
   free_options.cancel();
   free_impl.cancel();
