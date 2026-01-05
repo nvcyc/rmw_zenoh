@@ -28,6 +28,7 @@
 
 #include <zenoh.hxx>
 
+#include "../buffer_backend_loader.hpp"
 #include "graph_cache.hpp"
 #include "guard_condition.hpp"
 #include "identifier.hpp"
@@ -375,6 +376,9 @@ public:
 
     // Drop the shared session.
     session_.reset();
+
+    // Cleanup buffer backend system before plugins are unloaded
+    rmw_zenoh_cpp::shutdown_buffer_backends();
 
     return RMW_RET_OK;
   }

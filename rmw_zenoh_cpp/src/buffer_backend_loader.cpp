@@ -106,4 +106,34 @@ void initialize_buffer_backends()
   std::cerr << "[RMW Zenoh] Total backends registered: " << backend_ops.size() << "\n";
 }
 
+void shutdown_buffer_backends()
+{
+  std::cerr << "[RMW Zenoh] Shutting down buffer backends...\n";
+
+  // Clear global serialization maps that hold lambdas capturing backend shared_ptrs
+  // This MUST be done before BufferBackendRegistry singleton is destroyed
+  // to prevent ClassLoader from trying to unload while objects exist
+  try {
+    auto & backend_ops = rosidl_typesupport_fastrtps_cpp::get_backend_descriptor_ops();
+    backend_ops.clear();
+    std::cerr << "[RMW Zenoh] Cleared backend descriptor ops\n";
+
+    auto & serializers = rosidl_typesupport_fastrtps_cpp::get_descriptor_serializers();
+    serializers.clear();
+    std::cerr << "[RMW Zenoh] Cleared descriptor serializers\n";
+  } catch (const std::exception & e) {
+    std::cerr << "[RMW Zenoh] Warning during buffer backend shutdown: " << e.what() << "\n";
+  }
+
+  // Clear the backend registry to release shared_ptr to plugin instances
+  try {
+    rosidl_buffer_registry::BufferBackendRegistry::get_instance().clear_global_state();
+    std::cerr << "[RMW Zenoh] Cleared buffer backend registry\n";
+  } catch (const std::exception & e) {
+    std::cerr << "[RMW Zenoh] Warning clearing backend registry: " << e.what() << "\n";
+  }
+
+  std::cerr << "[RMW Zenoh] Buffer backend shutdown complete\n";
+}
+
 }  // namespace rmw_zenoh_cpp

@@ -22,6 +22,10 @@ namespace rmw_zenoh_cpp
 /// Loads buffer backend plugins and registers them with FastCDR serialization
 void initialize_buffer_backends();
 
+/// Cleanup buffer backend system
+/// Clears global serialization maps to release plugin references before unloading
+void shutdown_buffer_backends();
+
 }  // namespace rmw_zenoh_cpp
 
 #endif  // RMW_ZENOH_CPP__BUFFER_BACKEND_LOADER_HPP_
