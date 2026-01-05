@@ -28,11 +28,14 @@
 #include <cstdint>
 
 #include "cdr.hpp"
+#include "identifier.hpp"
 #include "rmw_context_impl_s.hpp"
 #include "message_type_support.hpp"
 #include "logging_macros.hpp"
 #include "qos.hpp"
 #include "zenoh_utils.hpp"
+
+#include "host_endpoint_manager/host_endpoint_manager.hpp"
 
 #include "rcpputils/scope_exit.hpp"
 
@@ -170,7 +173,7 @@ std::shared_ptr<PublisherData> PublisherData::make(
     return nullptr;
   }
 
-  return std::shared_ptr<PublisherData>(
+  auto pub_data = std::shared_ptr<PublisherData>(
     new PublisherData{
       rmw_publisher,
       node,
@@ -181,6 +184,23 @@ std::shared_ptr<PublisherData> PublisherData::make(
       type_support->data,
       std::move(message_type_support)
     });
+
+  // Register with Host Endpoint Manager
+  auto context_impl = static_cast<rmw_context_impl_t *>(node->context->impl);
+  auto endpoint_manager = context_impl->endpoint_manager();
+  if (endpoint_manager != nullptr) {
+    rmw_gid_t gid = rmw_zenoh_cpp::entity_gid_to_rmw_gid(
+      *pub_data->entity_, rmw_zenoh_cpp::rmw_zenoh_identifier);
+
+    if (!endpoint_manager->register_publisher(gid, topic_name.c_str())) {
+      RMW_ZENOH_LOG_ERROR_NAMED(
+        "rmw_zenoh_cpp",
+        "Failed to register publisher with Host Endpoint Manager");
+      return nullptr;
+    }
+  }
+
+  return pub_data;
 }
 
 ///=============================================================================
@@ -507,6 +527,21 @@ rmw_ret_t PublisherData::shutdown()
       "Unable to undeclare the publisher for topic '%s'",
       entity_->topic_info().value().name_.c_str());
     return RMW_RET_ERROR;
+  }
+
+  // Unregister from Host Endpoint Manager
+  auto context_impl = static_cast<rmw_context_impl_t *>(rmw_node_->context->impl);
+  auto endpoint_manager = context_impl->endpoint_manager();
+  if (endpoint_manager != nullptr) {
+    rmw_gid_t gid = rmw_zenoh_cpp::entity_gid_to_rmw_gid(
+      *entity_, rmw_zenoh_cpp::rmw_zenoh_identifier);
+
+    if (!endpoint_manager->unregister_endpoint(gid)) {
+      RMW_ZENOH_LOG_ERROR_NAMED(
+        "rmw_zenoh_cpp",
+        "Failed to unregister publisher from Host Endpoint Manager");
+      return RMW_RET_ERROR;
+    }
   }
 
   sess_.reset();

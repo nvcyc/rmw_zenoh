@@ -16,6 +16,7 @@ find_package(ament_cmake REQUIRED)
 
 find_package(ament_index_cpp REQUIRED)
 find_package(fastcdr CONFIG REQUIRED)
+find_package(host_endpoint_manager REQUIRED)
 find_package(rcpputils REQUIRED)
 find_package(rcutils REQUIRED)
 find_package(rosidl_buffer_registry REQUIRED)
@@ -65,6 +66,7 @@ target_link_libraries(rmw_zenoh_cpp
   PRIVATE
     ament_index_cpp::ament_index_cpp
     fastcdr
+    host_endpoint_manager::host_endpoint_manager
     rcpputils::rcpputils
     rcutils::rcutils
     rosidl_buffer_registry::rosidl_buffer_registry
@@ -96,12 +98,25 @@ if(BUILD_TESTING)
   find_package(ament_cmake_lint_cmake REQUIRED)
   find_package(ament_cmake_uncrustify REQUIRED)
   find_package(ament_cmake_xmllint REQUIRED)
+  find_package(ament_cmake_gtest REQUIRED)
 
   ament_copyright(EXCLUDE src/detail/simplified_xxhash3.cpp src/detail/simplified_xxhash3.hpp)
   ament_cpplint()
   ament_lint_cmake()
   ament_uncrustify()
   ament_xmllint()
+
+  # Integration test for Host Endpoint Manager
+  ament_add_gtest(test_endpoint_manager_integration
+    test/test_endpoint_manager_integration.cpp
+    TIMEOUT 120
+  )
+  if(TARGET test_endpoint_manager_integration)
+    target_link_libraries(test_endpoint_manager_integration
+      rmw_zenoh_cpp
+      host_endpoint_manager::host_endpoint_manager
+    )
+  endif()
 endif()
 
 install(

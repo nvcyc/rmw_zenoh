@@ -18,6 +18,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -271,5 +272,21 @@ struct equal_to<rmw_zenoh_cpp::liveliness::ConstEntityPtr>
   }
 };
 }  // namespace std
+
+///=============================================================================
+namespace rmw_zenoh_cpp
+{
+/// Helper function to convert Entity GID to rmw_gid_t
+inline rmw_gid_t entity_gid_to_rmw_gid(
+  const liveliness::Entity & entity,
+  const char * implementation_identifier)
+{
+  rmw_gid_t gid;
+  gid.implementation_identifier = implementation_identifier;
+  auto gid_array = entity.copy_gid();
+  memcpy(gid.data, gid_array.data(), RMW_GID_STORAGE_SIZE);
+  return gid;
+}
+}  // namespace rmw_zenoh_cpp
 
 #endif  // DETAIL__LIVELINESS_UTILS_HPP_

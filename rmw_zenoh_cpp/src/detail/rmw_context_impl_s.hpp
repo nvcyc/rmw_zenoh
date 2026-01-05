@@ -29,6 +29,12 @@
 #include "rmw/ret_types.h"
 #include "rmw/types.h"
 
+// Forward declaration
+namespace host_endpoint_manager
+{
+class HostEndpointManager;
+}
+
 ///=============================================================================
 struct rmw_context_impl_s final
 {
@@ -74,6 +80,9 @@ public:
 
   /// Return a shared_ptr to the Serialization buffer pool stored in this context.
   std::shared_ptr<rmw_zenoh_cpp::BufferPool> serialization_buffer_pool();
+
+  /// Return a shared_ptr to the HostEndpointManager stored in this context.
+  std::shared_ptr<host_endpoint_manager::HostEndpointManager> endpoint_manager();
 
   /// Create a NodeData and store it within this context. The NodeData can be
   /// retrieved using get_node().

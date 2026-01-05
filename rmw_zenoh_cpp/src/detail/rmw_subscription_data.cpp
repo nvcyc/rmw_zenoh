@@ -32,6 +32,9 @@
 #include "message_type_support.hpp"
 #include "logging_macros.hpp"
 #include "qos.hpp"
+#include "liveliness_utils.hpp"
+
+#include "host_endpoint_manager/host_endpoint_manager.hpp"
 
 #include "rcpputils/scope_exit.hpp"
 
@@ -129,6 +132,21 @@ std::shared_ptr<SubscriptionData> SubscriptionData::make(
   if (!sub_data->init()) {
     // init() already set the error
     return nullptr;
+  }
+
+  // Register with Host Endpoint Manager
+  auto context_impl = static_cast<rmw_context_impl_t *>(node->context->impl);
+  auto endpoint_manager = context_impl->endpoint_manager();
+  if (endpoint_manager != nullptr) {
+    rmw_gid_t gid = rmw_zenoh_cpp::entity_gid_to_rmw_gid(
+      *sub_data->entity_, rmw_zenoh_cpp::rmw_zenoh_identifier);
+
+    if (!endpoint_manager->register_subscription(gid, topic_name.c_str())) {
+      RMW_ZENOH_LOG_ERROR_NAMED(
+        "rmw_zenoh_cpp",
+        "Failed to register subscription with Host Endpoint Manager");
+      return nullptr;
+    }
   }
 
   return sub_data;
@@ -339,6 +357,21 @@ rmw_ret_t SubscriptionData::shutdown()
         "Unable to undeclare the subscriber for topic '%s'",
         entity_->topic_info().value().name_.c_str());
       return RMW_RET_ERROR;
+    }
+  }
+
+  // Unregister from Host Endpoint Manager
+  auto context_impl = static_cast<rmw_context_impl_t *>(rmw_node_->context->impl);
+  auto endpoint_manager = context_impl->endpoint_manager();
+  if (endpoint_manager != nullptr) {
+    rmw_gid_t gid = rmw_zenoh_cpp::entity_gid_to_rmw_gid(
+      *entity_, rmw_zenoh_cpp::rmw_zenoh_identifier);
+
+    if (!endpoint_manager->unregister_endpoint(gid)) {
+      RMW_ZENOH_LOG_ERROR_NAMED(
+        "rmw_zenoh_cpp",
+        "Failed to unregister subscription from Host Endpoint Manager");
+      ret = RMW_RET_ERROR;
     }
   }
 
