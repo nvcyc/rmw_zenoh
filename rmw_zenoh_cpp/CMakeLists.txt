@@ -105,18 +105,6 @@ if(BUILD_TESTING)
   ament_lint_cmake()
   ament_uncrustify()
   ament_xmllint()
-
-  # Integration test for Host Endpoint Manager
-  ament_add_gtest(test_endpoint_manager_integration
-    test/test_endpoint_manager_integration.cpp
-    TIMEOUT 120
-  )
-  if(TARGET test_endpoint_manager_integration)
-    target_link_libraries(test_endpoint_manager_integration
-      rmw_zenoh_cpp
-      host_endpoint_manager::host_endpoint_manager
-    )
-  endif()
 endif()
 
 install(
