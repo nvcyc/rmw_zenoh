@@ -310,9 +310,14 @@ rmw_ret_t PublisherData::publish_buffer_aware(
       continue;
     }
     
-    // TODO: For now, use regular serialization
-    // In future, use locality-aware serialization based on subs[0]->locality and common backends
-    // Serialize data
+    // Determine locality for this endpoint group
+    // All subscribers in this group have the same locality by construction
+    rmw_endpoint_locality_t locality = RMW_ENDPOINT_LOCALITY_UNDEFINED;
+    if (!subs.empty() && subs[0] != nullptr) {
+      locality = subs[0]->locality;
+    }
+    
+    // Serialize data using locality-aware serialization
     size_t max_data_length = type_support_->get_estimated_serialized_size(
       ros_message, type_support_impl_);
     
@@ -332,8 +337,10 @@ rmw_ret_t PublisherData::publish_buffer_aware(
     eprosima::fastcdr::FastBuffer fastbuffer(reinterpret_cast<char *>(msg_bytes), max_data_length);
     rmw_zenoh_cpp::Cdr ser(fastbuffer);
     
-    if (!type_support_->serialize_ros_message(ros_message, ser, type_support_impl_)) {
-      RMW_SET_ERROR_MSG("could not serialize ROS message");
+    // Use locality-aware serialization for Buffer-aware messages
+    if (!type_support_->serialize_ros_message_with_locality(
+      ros_message, ser, type_support_impl_, locality)) {
+      RMW_SET_ERROR_MSG("could not serialize ROS message with locality awareness");
       return RMW_RET_ERROR;
     }
     

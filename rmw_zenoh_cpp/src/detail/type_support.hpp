@@ -24,6 +24,7 @@
 #include "fastcdr/Cdr.h"
 
 #include "rosidl_typesupport_fastrtps_cpp/message_type_support.h"
+#include "rmw/types.h"
 
 namespace rmw_zenoh_cpp
 {
@@ -59,6 +60,18 @@ public:
 
   bool deserialize_ros_message(
     eprosima::fastcdr::Cdr & deser, void * ros_message, const void * impl) const;
+
+  bool serialize_ros_message_with_locality(
+    const void * ros_message,
+    eprosima::fastcdr::Cdr & ser,
+    const void * impl,
+    rmw_endpoint_locality_t locality) const;
+
+  bool deserialize_ros_message_with_locality(
+    eprosima::fastcdr::Cdr & deser,
+    void * ros_message,
+    const void * impl,
+    rmw_endpoint_locality_t locality) const;
 
   virtual ~TypeSupport() {}
 

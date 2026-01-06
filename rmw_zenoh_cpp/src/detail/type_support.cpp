@@ -140,4 +140,76 @@ bool TypeSupport::deserialize_ros_message(
 
   return true;
 }
+
+///=============================================================================
+bool TypeSupport::serialize_ros_message_with_locality(
+  const void * ros_message,
+  eprosima::fastcdr::Cdr & ser,
+  const void * impl,
+  rmw_endpoint_locality_t locality) const
+{
+  assert(ros_message);
+  assert(impl);
+
+  // Serialize encapsulation
+  ser.serialize_encapsulation();
+
+  // If type is not empty, serialize message
+  if (has_data_) {
+    auto callbacks = static_cast<const message_type_support_callbacks_t *>(impl);
+
+    // Use locality-aware serialization if available (for messages with Buffer fields)
+    if (callbacks->cdr_serialize_with_locality) {
+      return callbacks->cdr_serialize_with_locality(ros_message, ser, locality);
+    } else {
+      // Fall back to regular serialization for messages without Buffer fields
+      return callbacks->cdr_serialize(ros_message, ser);
+    }
+  }
+
+  // Otherwise, add a dummy byte
+  ser << (uint8_t)0;
+  return true;
+}
+
+///=============================================================================
+bool TypeSupport::deserialize_ros_message_with_locality(
+  eprosima::fastcdr::Cdr & deser,
+  void * ros_message,
+  const void * impl,
+  rmw_endpoint_locality_t locality) const
+{
+  assert(ros_message);
+  assert(impl);
+
+  try {
+    // Deserialize encapsulation.
+    deser.read_encapsulation();
+
+    // If type is not empty, deserialize message
+    if (has_data_) {
+      auto callbacks = static_cast<const message_type_support_callbacks_t *>(impl);
+
+      // Use locality-aware deserialization if available (for messages with Buffer fields)
+      if (callbacks->cdr_deserialize_with_locality) {
+        return callbacks->cdr_deserialize_with_locality(deser, ros_message, locality);
+      } else {
+        // Fall back to regular deserialization for messages without Buffer fields
+        return callbacks->cdr_deserialize(deser, ros_message);
+      }
+    }
+
+    // Otherwise, consume dummy byte
+    uint8_t dump = 0;
+    deser >> dump;
+    (void)dump;
+  } catch (const eprosima::fastcdr::exception::Exception & e) {
+    RMW_SET_ERROR_MSG_WITH_FORMAT_STRING(
+      "Fast CDR exception deserializing message of type %s. %s",
+      get_name(), e.what());
+    return false;
+  }
+
+  return true;
+}
 }  // namespace rmw_zenoh_cpp
