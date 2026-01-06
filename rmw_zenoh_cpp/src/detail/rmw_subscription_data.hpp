@@ -52,13 +52,15 @@ public:
     explicit Message(
       const zenoh::Bytes & bytes,
       uint64_t recv_ts,
-      AttachmentData && attachment);
+      AttachmentData && attachment,
+      rmw_endpoint_locality_t locality = RMW_ENDPOINT_LOCALITY_UNKNOWN);
 
     ~Message() = default;
 
     Payload payload;
     uint64_t recv_timestamp;
     AttachmentData attachment;
+    rmw_endpoint_locality_t locality;
   };
 
   // Make a shared_ptr of SubscriptionData.
@@ -93,7 +95,10 @@ public:
   bool is_shutdown() const;
 
   // Add a new message to the queue.
-  void add_new_message(std::unique_ptr<Message> msg, const std::string & topic_name);
+  void add_new_message(
+    std::unique_ptr<Message> msg,
+    const std::string & topic_name,
+    rmw_endpoint_locality_t locality = RMW_ENDPOINT_LOCALITY_UNKNOWN);
 
   bool queue_has_data_and_attach_condition_if_not(rmw_wait_set_data_t * wait_set_data);
 
@@ -119,6 +124,22 @@ public:
   ~SubscriptionData();
 
 private:
+  // Structures for Buffer-aware subscribers
+  struct PublisherInfo {
+    rmw_gid_t gid;
+    rmw_endpoint_locality_t locality;
+    std::vector<std::string> backend_types;
+    std::string assigned_subscription_key;
+  };
+
+  struct SubscriptionEndpoint {
+    std::string key_suffix;
+    std::string full_key;
+    rmw_endpoint_locality_t locality;
+    std::vector<std::string> common_backends;
+    std::optional<zenoh::ext::AdvancedSubscriber<void>> sub;
+  };
+
   SubscriptionData(
     const rmw_node_t * rmw_node,
     std::shared_ptr<GraphCache> graph_cache,
@@ -126,9 +147,20 @@ private:
     std::shared_ptr<zenoh::Session> session,
     const void * type_support_impl,
     std::unique_ptr<MessageTypeSupport> type_support,
-    rmw_subscription_options_t sub_options);
+    rmw_subscription_options_t sub_options,
+    bool is_buffer_aware,
+    std::vector<std::string> my_backend_types);
 
   bool init();
+
+  // Discovery callback for Buffer-aware subscribers
+  void on_publisher_discovered(const liveliness::Entity & entity);
+
+  // Create subscription for a specific key
+  bool create_subscription_for_key(
+    const std::string & full_key,
+    rmw_endpoint_locality_t locality,
+    const std::vector<std::string> & common_backends);
 
   // Internal mutex.
   mutable std::mutex mutex_;
@@ -140,7 +172,7 @@ private:
   std::shared_ptr<liveliness::Entity> entity_;
   // A shared session
   std::shared_ptr<zenoh::Session> sess_;
-  // An owned advanced subscriber.
+  // An owned advanced subscriber (for simple subscriptions, this is the only one).
   std::optional<zenoh::ext::AdvancedSubscriber<void>> sub_;
   // Liveliness token for the subscription.
   std::optional<zenoh::LivelinessToken> token_;
@@ -161,6 +193,14 @@ private:
   bool is_shutdown_;
   // Whether the object has ever successfully been initialized.
   bool initialized_;
+  
+  // Buffer-aware subscription fields
+  bool is_buffer_aware_;
+  std::vector<std::string> my_backend_types_;
+  // For simple subscriptions: sub_endpoints_ contains only base subscription
+  // For buffer-aware: multiple subscriptions based on discovered publishers
+  std::unordered_map<std::string, std::shared_ptr<SubscriptionEndpoint>> sub_endpoints_;
+  std::vector<PublisherInfo> discovered_publishers_;
 };
 using SubscriptionDataPtr = std::shared_ptr<SubscriptionData>;
 using SubscriptionDataConstPtr = std::shared_ptr<const SubscriptionData>;

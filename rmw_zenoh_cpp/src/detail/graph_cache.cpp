@@ -191,8 +191,24 @@ void GraphCache::update_topic_map_for_put(
     TopicDataPtr & existing_graph_topic = topic_qos_map_it->second;
     if (is_pub) {
       existing_graph_topic->pubs_.insert(entity);
+      
+      // Trigger subscriber discovery callbacks for Buffer-aware publishers
+      std::lock_guard<std::mutex> disc_lock(discovery_mutex_);
+      if (subscriber_discovery_callbacks_.count(graph_topic_data->info_.name_)) {
+        for (const auto & [gid_hash, callback] : subscriber_discovery_callbacks_[graph_topic_data->info_.name_]) {
+          callback(*entity);
+        }
+      }
     } else {
       existing_graph_topic->subs_.insert(entity);
+      
+      // Trigger publisher discovery callbacks for Buffer-aware subscribers
+      std::lock_guard<std::mutex> disc_lock(discovery_mutex_);
+      if (publisher_discovery_callbacks_.count(graph_topic_data->info_.name_)) {
+        for (const auto & [gid_hash, callback] : publisher_discovery_callbacks_[graph_topic_data->info_.name_]) {
+          callback(*entity);
+        }
+      }
     }
   }
 }
@@ -1215,6 +1231,76 @@ void GraphCache::remove_qos_event_callbacks(std::size_t entity_gid_hash)
 {
   std::lock_guard<std::mutex> lock(events_mutex_);
   event_callbacks_.erase(entity_gid_hash);
+}
+
+///=============================================================================
+void GraphCache::register_subscriber_discovery_callback(
+  const std::string & topic_name,
+  std::size_t publisher_gid_hash,
+  EntityDiscoveryCallback callback)
+{
+  std::lock_guard<std::mutex> lock(discovery_mutex_);
+  subscriber_discovery_callbacks_[topic_name][publisher_gid_hash] = std::move(callback);
+  
+  // Immediately invoke callback for any existing subscribers on this topic
+  std::lock_guard<std::mutex> graph_lock(graph_mutex_);
+  for (const auto & [topic, type_map] : graph_topics_) {
+    if (topic == topic_name) {
+      for (const auto & [type, qos_map] : type_map) {
+        for (const auto & [qos, topic_data] : qos_map) {
+          for (const auto & entity_ptr : topic_data->subs_) {
+            // Invoke callback for existing subscribers
+            if (subscriber_discovery_callbacks_[topic_name].count(publisher_gid_hash)) {
+              subscriber_discovery_callbacks_[topic_name][publisher_gid_hash](*entity_ptr);
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+///=============================================================================
+void GraphCache::register_publisher_discovery_callback(
+  const std::string & topic_name,
+  std::size_t subscriber_gid_hash,
+  EntityDiscoveryCallback callback)
+{
+  std::lock_guard<std::mutex> lock(discovery_mutex_);
+  publisher_discovery_callbacks_[topic_name][subscriber_gid_hash] = std::move(callback);
+  
+  // Immediately invoke callback for any existing publishers on this topic
+  std::lock_guard<std::mutex> graph_lock(graph_mutex_);
+  for (const auto & [topic, type_map] : graph_topics_) {
+    if (topic == topic_name) {
+      for (const auto & [type, qos_map] : type_map) {
+        for (const auto & [qos, topic_data] : qos_map) {
+          for (const auto & entity_ptr : topic_data->pubs_) {
+            // Invoke callback for existing publishers
+            if (publisher_discovery_callbacks_[topic_name].count(subscriber_gid_hash)) {
+              publisher_discovery_callbacks_[topic_name][subscriber_gid_hash](*entity_ptr);
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+///=============================================================================
+void GraphCache::unregister_discovery_callbacks(std::size_t gid_hash)
+{
+  std::lock_guard<std::mutex> lock(discovery_mutex_);
+  
+  // Remove from all topics in subscriber discovery callbacks
+  for (auto & [topic_name, callbacks] : subscriber_discovery_callbacks_) {
+    callbacks.erase(gid_hash);
+  }
+  
+  // Remove from all topics in publisher discovery callbacks
+  for (auto & [topic_name, callbacks] : publisher_discovery_callbacks_) {
+    callbacks.erase(gid_hash);
+  }
 }
 
 ///=============================================================================

@@ -26,6 +26,7 @@
 #include <variant>
 
 #include "attachment_helpers.hpp"
+#include "buffer_backend_loader.hpp"
 #include "cdr.hpp"
 #include "identifier.hpp"
 #include "rmw_context_impl_s.hpp"
@@ -42,14 +43,17 @@
 #include "rmw/get_topic_endpoint_info.h"
 #include "rmw/impl/cpp/macros.hpp"
 
+#include "rosidl_typesupport_fastrtps_cpp/message_type_support.h"
+
 namespace rmw_zenoh_cpp
 {
 ///=============================================================================
 SubscriptionData::Message::Message(
   const zenoh::Bytes & p,
   uint64_t recv_ts,
-  AttachmentData && attachment_)
-: payload(p), recv_timestamp(recv_ts), attachment(std::move(attachment_))
+  AttachmentData && attachment_,
+  rmw_endpoint_locality_t locality_)
+: payload(p), recv_timestamp(recv_ts), attachment(std::move(attachment_)), locality(locality_)
 {
 }
 
@@ -78,6 +82,22 @@ std::shared_ptr<SubscriptionData> SubscriptionData::make(
   const rosidl_type_hash_t * type_hash = type_support->get_type_hash_func(type_support);
   auto callbacks = static_cast<const message_type_support_callbacks_t *>(type_support->data);
   auto message_type_support = std::make_unique<MessageTypeSupport>(callbacks);
+
+  // CREATION-TIME DECISION: Check if message type has Buffer fields
+  bool has_buffer_fields = callbacks->has_buffer_fields;
+  bool is_buffer_aware = has_buffer_fields;
+  
+  // Query installed backends if message type has Buffer fields
+  std::optional<std::vector<std::string>> backend_types = std::nullopt;
+  std::vector<std::string> my_backend_types;
+  if (is_buffer_aware) {
+    my_backend_types = rmw_zenoh_cpp::get_installed_backend_types();
+    backend_types = my_backend_types;
+    RMW_ZENOH_LOG_DEBUG_NAMED(
+      "rmw_zenoh_cpp",
+      "Creating Buffer-aware subscription for topic %s with %zu backends",
+      topic_name.c_str(), my_backend_types.size());
+  }
 
   // Convert the type hash to a string so that it can be included in the keyexpr.
   char * type_hash_c_str = nullptr;
@@ -108,7 +128,8 @@ std::shared_ptr<SubscriptionData> SubscriptionData::make(
       topic_name,
       message_type_support->get_name(),
       type_hash_c_str,
-      adapted_qos_profile}
+      adapted_qos_profile,
+      backend_types}  // Include backends only if Buffer message type
   );
   if (entity == nullptr) {
     RMW_ZENOH_LOG_ERROR_NAMED(
@@ -126,12 +147,27 @@ std::shared_ptr<SubscriptionData> SubscriptionData::make(
       std::move(session),
       type_support->data,
       std::move(message_type_support),
-      sub_options
+      sub_options,
+      is_buffer_aware,
+      my_backend_types
     });
 
   if (!sub_data->init()) {
     // init() already set the error
     return nullptr;
+  }
+
+  // Register discovery callback for Buffer-aware subscribers
+  if (is_buffer_aware && graph_cache != nullptr) {
+    std::weak_ptr<SubscriptionData> weak_sub_data = sub_data;
+    graph_cache->register_publisher_discovery_callback(
+      topic_name,
+      sub_data->gid_hash(),
+      [weak_sub_data](const liveliness::Entity & entity) {
+        if (auto sd = weak_sub_data.lock()) {
+          sd->on_publisher_discovered(entity);
+        }
+      });
   }
 
   // Register with Host Endpoint Manager
@@ -160,7 +196,9 @@ SubscriptionData::SubscriptionData(
   std::shared_ptr<zenoh::Session> session,
   const void * type_support_impl,
   std::unique_ptr<MessageTypeSupport> type_support,
-  rmw_subscription_options_t sub_options)
+  rmw_subscription_options_t sub_options,
+  bool is_buffer_aware,
+  std::vector<std::string> my_backend_types)
 : rmw_node_(rmw_node),
   graph_cache_(std::move(graph_cache)),
   entity_(std::move(entity)),
@@ -171,7 +209,9 @@ SubscriptionData::SubscriptionData(
   last_known_published_msg_({}),
   wait_set_data_(nullptr),
   is_shutdown_(false),
-  initialized_(false)
+  initialized_(false),
+  is_buffer_aware_(is_buffer_aware),
+  my_backend_types_(std::move(my_backend_types))
 {
   events_mgr_ = std::make_shared<EventsManager>();
 }
@@ -224,44 +264,53 @@ bool SubscriptionData::init()
     }
   }
 
-  std::weak_ptr<SubscriptionData> data_wp = shared_from_this();
-  auto on_sample = [data_wp](const zenoh::Sample & sample) {
-      auto sub_data = data_wp.lock();
-      if (sub_data == nullptr) {
-        RMW_ZENOH_LOG_ERROR_NAMED(
-          "rmw_zenoh_cpp",
-          "SubscriberCallback triggered over %s.",
-          std::string(sample.get_keyexpr().as_string_view()).c_str()
-        );
-        return;
-      }
-      auto attachment = sample.get_attachment();
-      if (!attachment.has_value()) {
-        RMW_ZENOH_LOG_ERROR_NAMED(
-          "rmw_zenoh_cpp",
-          "Unable to obtain attachment for topic '%s'",
-          std::string(sample.get_keyexpr().as_string_view()).c_str())
-        return;
-      }
-      auto attachment_value = attachment.value();
+  // SIMPLE PATH: Create base subscription immediately (non-Buffer messages)
+  // COMPLEX PATH: Wait for publisher discovery before creating subscriptions (Buffer messages)
+  if (!is_buffer_aware_) {
+    std::weak_ptr<SubscriptionData> data_wp = shared_from_this();
+    auto on_sample = [data_wp](const zenoh::Sample & sample) {
+        auto sub_data = data_wp.lock();
+        if (sub_data == nullptr) {
+          RMW_ZENOH_LOG_ERROR_NAMED(
+            "rmw_zenoh_cpp",
+            "SubscriberCallback triggered over %s.",
+            std::string(sample.get_keyexpr().as_string_view()).c_str()
+          );
+          return;
+        }
+        auto attachment = sample.get_attachment();
+        if (!attachment.has_value()) {
+          RMW_ZENOH_LOG_ERROR_NAMED(
+            "rmw_zenoh_cpp",
+            "Unable to obtain attachment for topic '%s'",
+            std::string(sample.get_keyexpr().as_string_view()).c_str())
+          return;
+        }
+        auto attachment_value = attachment.value();
 
-      AttachmentData attachment_data(attachment_value);
-      sub_data->add_new_message(
-        std::make_unique<SubscriptionData::Message>(
-          sample.get_payload(),
-          get_system_time_in_ns(),
-          std::move(attachment_data)),
-        std::string(sample.get_keyexpr().as_string_view()));
-    };
-  sub_ = context_impl->session()->ext().declare_advanced_subscriber(
-    sub_ke,
-    std::move(on_sample),
-    zenoh::closures::none,
-    std::move(adv_sub_opts),
-    &result);
-  if (result != Z_OK) {
-    RMW_SET_ERROR_MSG("unable to create zenoh subscription");
-    return false;
+        AttachmentData attachment_data(attachment_value);
+        sub_data->add_new_message(
+          std::make_unique<SubscriptionData::Message>(
+            sample.get_payload(),
+            get_system_time_in_ns(),
+            std::move(attachment_data)),
+          std::string(sample.get_keyexpr().as_string_view()));
+      };
+    sub_ = context_impl->session()->ext().declare_advanced_subscriber(
+      sub_ke,
+      std::move(on_sample),
+      zenoh::closures::none,
+      std::move(adv_sub_opts),
+      &result);
+    if (result != Z_OK) {
+      RMW_SET_ERROR_MSG("unable to create zenoh subscription");
+      return false;
+    }
+  } else {
+    // Buffer-aware: subscriptions will be created dynamically in on_publisher_discovered
+    RMW_ZENOH_LOG_DEBUG_NAMED(
+      "rmw_zenoh_cpp",
+      "Buffer-aware subscription initialized without base subscription, waiting for publisher discovery");
   }
 
   // Publish to the graph that a new subscription is in town.
@@ -327,6 +376,146 @@ SubscriptionData::~SubscriptionData()
 }
 
 ///=============================================================================
+void SubscriptionData::on_publisher_discovered(const liveliness::Entity & entity)
+{
+  std::lock_guard<std::mutex> lock(mutex_);
+  
+  if (!is_buffer_aware_) {
+    return;  // Should not be called for non-Buffer-aware subscriptions
+  }
+
+  // Parse publisher backend list from liveliness key
+  const auto & topic_info = entity.topic_info();
+  if (!topic_info.has_value() || !topic_info->backend_types_.has_value()) {
+    RMW_ZENOH_LOG_WARN_NAMED(
+      "rmw_zenoh_cpp",
+      "Discovered publisher without backend info on Buffer topic");
+    return;
+  }
+
+  const std::vector<std::string> & pub_backends = topic_info->backend_types_.value();
+  
+  // Check backend compatibility
+  if (!rmw_zenoh_cpp::backends_compatible(my_backend_types_, pub_backends)) {
+    RMW_ZENOH_LOG_DEBUG_NAMED(
+      "rmw_zenoh_cpp",
+      "Discovered publisher with incompatible backends, skipping");
+    return;
+  }
+
+  // Query locality from Host Endpoint Manager
+  auto context_impl = static_cast<rmw_context_impl_t *>(rmw_node_->context->impl);
+  auto endpoint_manager = context_impl->endpoint_manager();
+  
+  rmw_gid_t pub_gid = rmw_zenoh_cpp::entity_gid_to_rmw_gid(entity, rmw_zenoh_cpp::rmw_zenoh_identifier);
+  rmw_endpoint_locality_t locality = RMW_ENDPOINT_LOCALITY_UNKNOWN;
+  
+  if (endpoint_manager != nullptr) {
+    locality = endpoint_manager->query_locality(pub_gid);
+  }
+
+  // Compute key suffix based on locality and common backends
+  std::string key_suffix = rmw_zenoh_cpp::compute_endpoint_key_suffix(
+    locality, pub_backends, my_backend_types_);
+  
+  std::string suffixed_key = entity_->topic_info()->topic_keyexpr_ + key_suffix;
+
+  // Create subscription for this suffixed key if not already exists
+  if (sub_endpoints_.find(suffixed_key) == sub_endpoints_.end()) {
+    create_subscription_for_key(suffixed_key, locality);
+  }
+}
+
+///=============================================================================
+void SubscriptionData::create_subscription_for_key(
+  const std::string & key,
+  rmw_endpoint_locality_t locality)
+{
+  zenoh::ZResult result;
+  zenoh::KeyExpr sub_ke(key, true, &result);
+  if (result != Z_OK) {
+    RMW_ZENOH_LOG_ERROR_NAMED(
+      "rmw_zenoh_cpp",
+      "Unable to create zenoh keyexpr for key: %s", key.c_str());
+    return;
+  }
+
+  rmw_context_impl_t * context_impl = static_cast<rmw_context_impl_t *>(rmw_node_->context->impl);
+
+  using AdvancedSubscriberOptions = zenoh::ext::SessionExt::AdvancedSubscriberOptions;
+  using RecoveryOptions = AdvancedSubscriberOptions::RecoveryOptions;
+  auto adv_sub_opts = AdvancedSubscriberOptions::create_default();
+
+  if (sub_options_.ignore_local_publications) {
+    adv_sub_opts.subscriber_options.allowed_origin = ZC_LOCALITY_REMOTE;
+  }
+
+  if (entity_->topic_info()->qos_.durability == RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL) {
+    adv_sub_opts.subscriber_detection = true;
+    adv_sub_opts.query_timeout_ms = std::numeric_limits<uint64_t>::max();
+    adv_sub_opts.history = AdvancedSubscriberOptions::HistoryOptions::create_default();
+    adv_sub_opts.history->detect_late_publishers = true;
+    adv_sub_opts.history->max_samples = entity_->topic_info()->qos_.depth;
+    if (entity_->topic_info()->qos_.reliability == RMW_QOS_POLICY_RELIABILITY_RELIABLE) {
+      adv_sub_opts.recovery = AdvancedSubscriberOptions::RecoveryOptions{};
+      adv_sub_opts.recovery->last_sample_miss_detection = RecoveryOptions::Heartbeat{};
+    }
+  }
+
+  std::weak_ptr<SubscriptionData> data_wp = shared_from_this();
+  auto on_sample = [data_wp, locality](const zenoh::Sample & sample) {
+      auto sub_data = data_wp.lock();
+      if (sub_data == nullptr) {
+        return;
+      }
+      
+      auto attachment = sample.get_attachment();
+      if (!attachment.has_value()) {
+        RMW_ZENOH_LOG_ERROR_NAMED(
+          "rmw_zenoh_cpp",
+          "Unable to obtain attachment for topic '%s'",
+          std::string(sample.get_keyexpr().as_string_view()).c_str());
+        return;
+      }
+      
+      AttachmentData attachment_data(attachment.value());
+      
+      // Store locality with message for deserialization
+      sub_data->add_new_message(
+        std::make_unique<SubscriptionData::Message>(
+          sample.get_payload(),
+          get_system_time_in_ns(),
+          std::move(attachment_data)),
+        std::string(sample.get_keyexpr().as_string_view()),
+        locality);
+    };
+
+  auto sub = context_impl->session()->ext().declare_advanced_subscriber(
+    sub_ke,
+    std::move(on_sample),
+    zenoh::closures::none,
+    std::move(adv_sub_opts),
+    &result);
+  
+  if (result != Z_OK) {
+    RMW_ZENOH_LOG_ERROR_NAMED(
+      "rmw_zenoh_cpp",
+      "Unable to create zenoh subscription for key: %s", key.c_str());
+    return;
+  }
+
+  SubscriptionEndpoint endpoint;
+  endpoint.sub = std::move(sub);
+  endpoint.locality = locality;
+  sub_endpoints_[key] = std::move(endpoint);
+  
+  RMW_ZENOH_LOG_DEBUG_NAMED(
+    "rmw_zenoh_cpp",
+    "Created Buffer-aware subscription for key: %s with locality: %d",
+    key.c_str(), locality);
+}
+
+///=============================================================================
 rmw_ret_t SubscriptionData::shutdown()
 {
   rmw_ret_t ret = RMW_RET_OK;
@@ -337,6 +526,11 @@ rmw_ret_t SubscriptionData::shutdown()
 
   // Remove any event callbacks registered to this subscription.
   graph_cache_->remove_qos_event_callbacks(entity_->gid_hash());
+  
+  // Unregister discovery callbacks if Buffer-aware
+  if (is_buffer_aware_) {
+    graph_cache_->unregister_discovery_callbacks(entity_->gid_hash());
+  }
 
   // Unregister this subscription from the ROS graph.
   zenoh::ZResult result;
@@ -348,6 +542,19 @@ rmw_ret_t SubscriptionData::shutdown()
       entity_->topic_info().value().name_.c_str());
     return RMW_RET_ERROR;
   }
+
+  // Undeclare all dynamic subscriptions for Buffer-aware subscriptions
+  for (auto & [key, endpoint] : sub_endpoints_) {
+    std::move(endpoint.sub).undeclare(&result);
+    if (result != Z_OK) {
+      RMW_ZENOH_LOG_ERROR_NAMED(
+        "rmw_zenoh_cpp",
+        "Unable to undeclare subscription for key '%s'",
+        key.c_str());
+      ret = RMW_RET_ERROR;
+    }
+  }
+  sub_endpoints_.clear();
 
   if (sub_.has_value()) {
     std::move(sub_.value()).undeclare(&result);
@@ -442,11 +649,31 @@ rmw_ret_t SubscriptionData::take_one_message(
 
   // Object that serializes the data
   rmw_zenoh_cpp::Cdr deser(fastbuffer);
-  if (!type_support_->deserialize_ros_message(
+  
+  // Use locality-aware deserialization for Buffer-aware subscriptions
+  bool deserialize_success;
+  if (is_buffer_aware_) {
+    auto callbacks = static_cast<const rosidl_typesupport_fastrtps_cpp::message_type_support_callbacks_t *>(
+      type_support_impl_);
+    
+    if (callbacks->deserialize_with_locality) {
+      deserialize_success = callbacks->deserialize_with_locality(
+        deser.get_cdr(),
+        ros_message,
+        msg_data->locality);
+    } else {
+      RMW_SET_ERROR_MSG("Buffer-aware message type missing deserialize_with_locality function");
+      return RMW_RET_ERROR;
+    }
+  } else {
+    // Simple path: standard deserialization
+    deserialize_success = type_support_->deserialize_ros_message(
       deser.get_cdr(),
       ros_message,
-      type_support_impl_))
-  {
+      type_support_impl_);
+  }
+  
+  if (!deserialize_success) {
     RMW_SET_ERROR_MSG("could not deserialize ROS message");
     return RMW_RET_ERROR;
   }
@@ -527,7 +754,9 @@ rmw_ret_t SubscriptionData::take_serialized_message(
 
 ///=============================================================================
 void SubscriptionData::add_new_message(
-  std::unique_ptr<SubscriptionData::Message> msg, const std::string & topic_name)
+  std::unique_ptr<SubscriptionData::Message> msg,
+  const std::string & topic_name,
+  rmw_endpoint_locality_t locality)
 {
   std::lock_guard<std::mutex> lock(mutex_);
   if (is_shutdown_) {

@@ -78,11 +78,13 @@ TopicInfo::TopicInfo(
   std::string name,
   std::string type,
   std::string type_hash,
-  rmw_qos_profile_t qos)
+  rmw_qos_profile_t qos,
+  std::optional<std::vector<std::string>> backend_types)
 : name_(std::move(name)),
   type_(std::move(type)),
   type_hash_(std::move(type_hash)),
-  qos_(std::move(qos))
+  qos_(std::move(qos)),
+  backend_types_(std::move(backend_types))
 {
   topic_keyexpr_ = std::to_string(domain_id);
   topic_keyexpr_ += "/";
@@ -111,12 +113,13 @@ enum KeyexprIndex
   TopicName,
   TopicType,
   TopicTypeHash,
-  TopicQoS
+  TopicQoS,
+  Backends  // Optional: only present for Buffer message types
 };
 
 // Every keyexpression will have components upto node name.
 #define KEYEXPR_INDEX_MIN KeyexprIndex::NodeName
-#define KEYEXPR_INDEX_MAX KeyexprIndex::TopicQoS
+#define KEYEXPR_INDEX_MAX KeyexprIndex::Backends
 
 /// The admin space used to prefix the liveliness tokens.
 static const char ADMIN_SPACE[] = "@ros2_lv";
@@ -415,6 +418,19 @@ Entity::Entity(
     keyexpr_parts[KeyexprIndex::TopicType] = mangle_name(topic_info.type_);
     keyexpr_parts[KeyexprIndex::TopicTypeHash] = mangle_name(topic_info.type_hash_);
     keyexpr_parts[KeyexprIndex::TopicQoS] = qos_to_keyexpr(topic_info.qos_);
+    
+    // Add backends if present (only for Buffer message types)
+    if (topic_info.backend_types_.has_value() && !topic_info.backend_types_.value().empty()) {
+      std::string backends_str = "backends:";
+      const auto & backends = topic_info.backend_types_.value();
+      for (size_t i = 0; i < backends.size(); ++i) {
+        backends_str += backends[i];
+        if (i < backends.size() - 1) {
+          backends_str += ",";
+        }
+      }
+      keyexpr_parts[KeyexprIndex::Backends] = backends_str;
+    }
   }
 
   for (std::size_t i = 0; i < KEYEXPR_INDEX_MAX + 1; ++i) {
@@ -535,7 +551,8 @@ std::shared_ptr<Entity> Entity::make(const std::string & keyexpr)
 
   // Populate topic_info if we have a token for an entity other than a node.
   if (entity_type != EntityType::Node) {
-    if (parts.size() < KEYEXPR_INDEX_MAX + 1) {
+    // Minimum required: up to TopicQoS (backends is optional)
+    if (parts.size() < KeyexprIndex::TopicQoS + 1) {
       RMW_ZENOH_LOG_ERROR_NAMED(
         "rmw_zenoh_cpp",
         "Received liveliness token for non-node entity without required parameters.");
@@ -548,12 +565,26 @@ std::shared_ptr<Entity> Entity::make(const std::string & keyexpr)
         "Received liveliness token with invalid qos keyexpr");
       return nullptr;
     }
+    
+    // Parse optional backends field (only present for Buffer message types)
+    std::optional<std::vector<std::string>> backend_types = std::nullopt;
+    if (parts.size() > KeyexprIndex::TopicQoS + 1 && 
+        !parts[KeyexprIndex::Backends].empty() &&
+        parts[KeyexprIndex::Backends].rfind("backends:", 0) == 0) {
+      // Parse backend list: "backends:cuda,cpu" -> ["cuda", "cpu"]
+      std::string backends_str = parts[KeyexprIndex::Backends].substr(9);  // Skip "backends:"
+      if (!backends_str.empty()) {
+        backend_types = split_keyexpr(backends_str, ',');
+      }
+    }
+    
     topic_info = TopicInfo{
       domain_id,
       demangle_name(std::move(parts[KeyexprIndex::TopicName])),
       demangle_name(std::move(parts[KeyexprIndex::TopicType])),
       demangle_name(std::move(parts[KeyexprIndex::TopicTypeHash])),
-      std::move(qos.value())
+      std::move(qos.value()),
+      std::move(backend_types)
     };
   }
 

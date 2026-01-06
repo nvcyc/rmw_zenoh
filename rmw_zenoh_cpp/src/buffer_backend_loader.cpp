@@ -136,4 +136,132 @@ void shutdown_buffer_backends()
   std::cerr << "[RMW Zenoh] Buffer backend shutdown complete\n";
 }
 
+///=============================================================================
+std::vector<std::string> get_installed_backend_types()
+{
+  std::vector<std::string> backend_types;
+  
+  // Always include CPU backend
+  backend_types.push_back("cpu");
+  
+  // Get additional backends from the registry
+  try {
+    auto & registry = rosidl_buffer_registry::BufferBackendRegistry::get_instance();
+    auto backend_names = registry.get_backend_names();
+    
+    for (const auto & backend_name : backend_names) {
+      auto backend = registry.get_backend(backend_name);
+      if (backend) {
+        std::string backend_type = backend->get_backend_type();
+        // Avoid duplicating CPU if it's in the registry
+        if (backend_type != "cpu") {
+          backend_types.push_back(backend_type);
+        }
+      }
+    }
+  } catch (const std::exception & e) {
+    std::cerr << "[RMW Zenoh] Warning getting backend types: " << e.what() << "\n";
+  }
+  
+  return backend_types;
+}
+
+///=============================================================================
+bool backends_compatible(
+  const std::vector<std::string> & a,
+  const std::vector<std::string> & b)
+{
+  // Check if there's at least one common backend
+  for (const auto & backend_a : a) {
+    for (const auto & backend_b : b) {
+      if (backend_a == backend_b) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+///=============================================================================
+std::vector<std::string> get_common_backends(
+  const std::vector<std::string> & a,
+  const std::vector<std::string> & b)
+{
+  std::vector<std::string> common;
+  
+  for (const auto & backend_a : a) {
+    for (const auto & backend_b : b) {
+      if (backend_a == backend_b) {
+        // Check if not already in common
+        bool already_added = false;
+        for (const auto & c : common) {
+          if (c == backend_a) {
+            already_added = true;
+            break;
+          }
+        }
+        if (!already_added) {
+          common.push_back(backend_a);
+        }
+      }
+    }
+  }
+  
+  return common;
+}
+
+///=============================================================================
+std::string compute_endpoint_key_suffix(
+  rmw_endpoint_locality_t locality,
+  const std::vector<std::string> & pub_backends,
+  const std::vector<std::string> & sub_backends)
+{
+  // Get common backends
+  auto common = get_common_backends(pub_backends, sub_backends);
+  
+  if (common.empty()) {
+    // No compatible backends - shouldn't happen if backends_compatible() was checked
+    return "cpu";  // Fallback to CPU
+  }
+  
+  // Select best backend based on priority (CUDA > other accelerators > CPU)
+  std::string selected_backend = "cpu";
+  for (const auto & backend : common) {
+    if (backend == "cuda") {
+      selected_backend = "cuda";
+      break;  // CUDA is highest priority
+    } else if (backend != "cpu") {
+      selected_backend = backend;  // Prefer any accelerator over CPU
+    }
+  }
+  
+  // Generate suffix based on locality and selected backend
+  std::string suffix;
+  
+  switch (locality) {
+    case RMW_ENDPOINT_LOCALITY_INTRA_PROCESS:
+      // Intra-process not yet implemented
+      suffix = "intra_process_" + selected_backend;
+      break;
+      
+    case RMW_ENDPOINT_LOCALITY_INTRA_HOST:
+      // Same machine, different process - use IPC
+      suffix = "ipc_" + selected_backend;
+      break;
+      
+    case RMW_ENDPOINT_LOCALITY_INTER_HOST:
+      // Different machines - use network transfer
+      suffix = "inter_process_" + selected_backend;
+      break;
+      
+    case RMW_ENDPOINT_LOCALITY_UNKNOWN:
+    default:
+      // Unknown locality - use conservative approach
+      suffix = selected_backend;
+      break;
+  }
+  
+  return suffix;
+}
+
 }  // namespace rmw_zenoh_cpp

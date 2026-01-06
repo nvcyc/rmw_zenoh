@@ -4,12 +4,11 @@
   <name>host_endpoint_manager</name>
   <version>0.1.0</version>
   <description>RMW-agnostic host-local endpoint locality manager for transport optimization</description>
-  <maintainer email="maintainer@example.com">Maintainer</maintainer>
+  <maintainer email="cyc@nvidia.com">CY Chen</maintainer>
   <license>Apache License 2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
-  <!-- Minimal dependencies for RMW agnosticism -->
   <depend>rmw</depend>
   <depend>rcutils</depend>
 

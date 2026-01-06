@@ -250,12 +250,3 @@ ros2 run <package> <node> --ros-args --log-level host_endpoint_manager:=debug
 cd /path/to/ros_ws
 colcon build --packages-select host_endpoint_manager
 ```
-
-## License
-
-Apache License 2.0
-
-## Maintainers
-
-- Maintainer <maintainer@example.com>
-
