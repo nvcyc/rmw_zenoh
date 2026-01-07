@@ -62,6 +62,11 @@ add_library(rmw_zenoh_cpp SHARED
   src/rmw_zenoh.cpp
 )
 
+target_include_directories(rmw_zenoh_cpp
+  PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
 target_link_libraries(rmw_zenoh_cpp
   PRIVATE
     ament_index_cpp::ament_index_cpp

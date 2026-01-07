@@ -86,7 +86,7 @@ std::shared_ptr<SubscriptionData> SubscriptionData::make(
   // CREATION-TIME DECISION: Check if message type has Buffer fields
   bool has_buffer_fields = callbacks->has_buffer_fields;
   bool is_buffer_aware = has_buffer_fields;
-  
+
   // Query installed backends if message type has Buffer fields
   std::optional<std::vector<std::string>> backend_types = std::nullopt;
   std::vector<std::string> my_backend_types;
@@ -379,7 +379,7 @@ SubscriptionData::~SubscriptionData()
 void SubscriptionData::on_publisher_discovered(const liveliness::Entity & entity)
 {
   std::lock_guard<std::mutex> lock(mutex_);
-  
+
   if (!is_buffer_aware_) {
     return;  // Should not be called for non-Buffer-aware subscriptions
   }
@@ -394,7 +394,7 @@ void SubscriptionData::on_publisher_discovered(const liveliness::Entity & entity
   }
 
   const std::vector<std::string> & pub_backends = topic_info->backend_types_.value();
-  
+
   // Check backend compatibility
   if (!rmw_zenoh_cpp::backends_compatible(my_backend_types_, pub_backends)) {
     RMW_ZENOH_LOG_DEBUG_NAMED(
@@ -406,18 +406,22 @@ void SubscriptionData::on_publisher_discovered(const liveliness::Entity & entity
   // Query locality from Host Endpoint Manager
   auto context_impl = static_cast<rmw_context_impl_t *>(rmw_node_->context->impl);
   auto endpoint_manager = context_impl->endpoint_manager();
-  
-  rmw_gid_t pub_gid = rmw_zenoh_cpp::entity_gid_to_rmw_gid(entity, rmw_zenoh_cpp::rmw_zenoh_identifier);
-  rmw_endpoint_locality_t locality = RMW_ENDPOINT_LOCALITY_UNKNOWN;
-  
+
+  rmw_gid_t pub_gid = rmw_zenoh_cpp::entity_gid_to_rmw_gid(entity,
+      rmw_zenoh_cpp::rmw_zenoh_identifier);
+  rmw_endpoint_locality_t locality = RMW_ENDPOINT_LOCALITY_UNDEFINED;
+
   if (endpoint_manager != nullptr) {
-    locality = endpoint_manager->query_locality(pub_gid);
+    auto locality_info = endpoint_manager->query_endpoint_locality(pub_gid);
+    if (locality_info.found) {
+      locality = locality_info.locality;
+    }
   }
 
   // Compute key suffix based on locality and common backends
   std::string key_suffix = rmw_zenoh_cpp::compute_endpoint_key_suffix(
     locality, pub_backends, my_backend_types_);
-  
+
   std::string suffixed_key = entity_->topic_info()->topic_keyexpr_ + key_suffix;
 
   // Create subscription for this suffixed key if not already exists
@@ -468,7 +472,7 @@ void SubscriptionData::create_subscription_for_key(
       if (sub_data == nullptr) {
         return;
       }
-      
+
       auto attachment = sample.get_attachment();
       if (!attachment.has_value()) {
         RMW_ZENOH_LOG_ERROR_NAMED(
@@ -477,9 +481,9 @@ void SubscriptionData::create_subscription_for_key(
           std::string(sample.get_keyexpr().as_string_view()).c_str());
         return;
       }
-      
+
       AttachmentData attachment_data(attachment.value());
-      
+
       // Store locality with message for deserialization
       sub_data->add_new_message(
         std::make_unique<SubscriptionData::Message>(
@@ -496,7 +500,7 @@ void SubscriptionData::create_subscription_for_key(
     zenoh::closures::none,
     std::move(adv_sub_opts),
     &result);
-  
+
   if (result != Z_OK) {
     RMW_ZENOH_LOG_ERROR_NAMED(
       "rmw_zenoh_cpp",
@@ -504,11 +508,11 @@ void SubscriptionData::create_subscription_for_key(
     return;
   }
 
-  SubscriptionEndpoint endpoint;
-  endpoint.sub = std::move(sub);
-  endpoint.locality = locality;
-  sub_endpoints_[key] = std::move(endpoint);
-  
+  auto endpoint = std::make_shared<SubscriptionEndpoint>();
+  endpoint->sub = std::optional<zenoh::ext::AdvancedSubscriber<void>>(std::move(sub));
+  endpoint->locality = locality;
+  sub_endpoints_[key] = endpoint;
+
   RMW_ZENOH_LOG_DEBUG_NAMED(
     "rmw_zenoh_cpp",
     "Created Buffer-aware subscription for key: %s with locality: %d",
@@ -526,7 +530,7 @@ rmw_ret_t SubscriptionData::shutdown()
 
   // Remove any event callbacks registered to this subscription.
   graph_cache_->remove_qos_event_callbacks(entity_->gid_hash());
-  
+
   // Unregister discovery callbacks if Buffer-aware
   if (is_buffer_aware_) {
     graph_cache_->unregister_discovery_callbacks(entity_->gid_hash());
@@ -545,13 +549,15 @@ rmw_ret_t SubscriptionData::shutdown()
 
   // Undeclare all dynamic subscriptions for Buffer-aware subscriptions
   for (auto & [key, endpoint] : sub_endpoints_) {
-    std::move(endpoint.sub).undeclare(&result);
-    if (result != Z_OK) {
-      RMW_ZENOH_LOG_ERROR_NAMED(
-        "rmw_zenoh_cpp",
-        "Unable to undeclare subscription for key '%s'",
-        key.c_str());
-      ret = RMW_RET_ERROR;
+    if (endpoint->sub.has_value()) {
+      std::move(endpoint->sub.value()).undeclare(&result);
+      if (result != Z_OK) {
+        RMW_ZENOH_LOG_ERROR_NAMED(
+          "rmw_zenoh_cpp",
+          "Unable to undeclare subscription for key '%s'",
+          key.c_str());
+        ret = RMW_RET_ERROR;
+      }
     }
   }
   sub_endpoints_.clear();
@@ -649,20 +655,20 @@ rmw_ret_t SubscriptionData::take_one_message(
 
   // Object that serializes the data
   rmw_zenoh_cpp::Cdr deser(fastbuffer);
-  
+
   // Use locality-aware deserialization for Buffer-aware subscriptions
   bool deserialize_success;
   if (is_buffer_aware_) {
-    auto callbacks = static_cast<const rosidl_typesupport_fastrtps_cpp::message_type_support_callbacks_t *>(
+    auto callbacks = static_cast<const message_type_support_callbacks_t *>(
       type_support_impl_);
-    
-    if (callbacks->deserialize_with_locality) {
-      deserialize_success = callbacks->deserialize_with_locality(
+
+    if (callbacks->cdr_deserialize_with_locality) {
+      deserialize_success = callbacks->cdr_deserialize_with_locality(
         deser.get_cdr(),
         ros_message,
         msg_data->locality);
     } else {
-      RMW_SET_ERROR_MSG("Buffer-aware message type missing deserialize_with_locality function");
+      RMW_SET_ERROR_MSG("Buffer-aware message type missing cdr_deserialize_with_locality function");
       return RMW_RET_ERROR;
     }
   } else {
@@ -672,7 +678,7 @@ rmw_ret_t SubscriptionData::take_one_message(
       ros_message,
       type_support_impl_);
   }
-  
+
   if (!deserialize_success) {
     RMW_SET_ERROR_MSG("could not deserialize ROS message");
     return RMW_RET_ERROR;

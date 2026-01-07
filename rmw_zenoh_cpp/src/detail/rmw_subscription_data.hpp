@@ -53,7 +53,7 @@ public:
       const zenoh::Bytes & bytes,
       uint64_t recv_ts,
       AttachmentData && attachment,
-      rmw_endpoint_locality_t locality = RMW_ENDPOINT_LOCALITY_UNKNOWN);
+      rmw_endpoint_locality_t locality = RMW_ENDPOINT_LOCALITY_UNDEFINED);
 
     ~Message() = default;
 
@@ -98,7 +98,7 @@ public:
   void add_new_message(
     std::unique_ptr<Message> msg,
     const std::string & topic_name,
-    rmw_endpoint_locality_t locality = RMW_ENDPOINT_LOCALITY_UNKNOWN);
+    rmw_endpoint_locality_t locality = RMW_ENDPOINT_LOCALITY_UNDEFINED);
 
   bool queue_has_data_and_attach_condition_if_not(rmw_wait_set_data_t * wait_set_data);
 
@@ -157,10 +157,9 @@ private:
   void on_publisher_discovered(const liveliness::Entity & entity);
 
   // Create subscription for a specific key
-  bool create_subscription_for_key(
+  void create_subscription_for_key(
     const std::string & full_key,
-    rmw_endpoint_locality_t locality,
-    const std::vector<std::string> & common_backends);
+    rmw_endpoint_locality_t locality);
 
   // Internal mutex.
   mutable std::mutex mutex_;

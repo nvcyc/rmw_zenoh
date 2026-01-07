@@ -105,7 +105,7 @@ private:
   struct PublisherEndpoint {
     std::string key_suffix;
     std::string full_key;
-    zenoh::ext::AdvancedPublisher pub;
+    std::optional<zenoh::ext::AdvancedPublisher> pub;
     std::vector<rmw_gid_t> target_subscribers;
     std::optional<std::vector<uint8_t>> cached_message;
   };

@@ -244,7 +244,7 @@ std::string compute_endpoint_key_suffix(
       suffix = "intra_process_" + selected_backend;
       break;
       
-    case RMW_ENDPOINT_LOCALITY_INTRA_HOST:
+    case RMW_ENDPOINT_LOCALITY_INTER_PROCESS_SAME_HOST:
       // Same machine, different process - use IPC
       suffix = "ipc_" + selected_backend;
       break;
@@ -254,7 +254,7 @@ std::string compute_endpoint_key_suffix(
       suffix = "inter_process_" + selected_backend;
       break;
       
-    case RMW_ENDPOINT_LOCALITY_UNKNOWN:
+    case RMW_ENDPOINT_LOCALITY_UNDEFINED:
     default:
       // Unknown locality - use conservative approach
       suffix = selected_backend;
