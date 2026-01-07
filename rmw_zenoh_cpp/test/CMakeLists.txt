@@ -25,6 +25,10 @@ if(BUILD_TESTING)
     target_link_libraries(test_buffer_backend_helpers
       ${PROJECT_NAME}
     )
+    ament_target_dependencies(test_buffer_backend_helpers
+      rmw
+      rosidl_buffer_registry
+    )
     target_include_directories(test_buffer_backend_helpers PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/../src
     )
@@ -37,6 +41,10 @@ if(BUILD_TESTING)
   if(TARGET test_subscription_creation)
     target_link_libraries(test_subscription_creation
       ${PROJECT_NAME}
+    )
+    ament_target_dependencies(test_subscription_creation
+      rmw
+      rosidl_buffer_registry
     )
     target_include_directories(test_subscription_creation PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/../src
@@ -51,6 +59,10 @@ if(BUILD_TESTING)
     target_link_libraries(test_liveliness_backends
       ${PROJECT_NAME}
     )
+    ament_target_dependencies(test_liveliness_backends
+      rmw
+      rosidl_buffer_registry
+    )
     target_include_directories(test_liveliness_backends PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/../src
     )
@@ -63,6 +75,10 @@ if(BUILD_TESTING)
   if(TARGET test_locality_aware_messaging)
     target_link_libraries(test_locality_aware_messaging
       ${PROJECT_NAME}
+    )
+    ament_target_dependencies(test_locality_aware_messaging
+      rmw
+      rosidl_buffer_registry
     )
     target_include_directories(test_locality_aware_messaging PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/../src

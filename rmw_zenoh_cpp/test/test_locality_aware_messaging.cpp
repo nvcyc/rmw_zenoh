@@ -33,7 +33,7 @@ TEST_F(LocalityAwareMessagingTest, LocalityTypes)
 {
   EXPECT_EQ(RMW_ENDPOINT_LOCALITY_UNDEFINED, 0);
   EXPECT_EQ(RMW_ENDPOINT_LOCALITY_INTRA_PROCESS, 1);
-  EXPECT_EQ(RMW_ENDPOINT_LOCALITY_INTER_PROCESS, 2);
+  EXPECT_EQ(RMW_ENDPOINT_LOCALITY_INTER_PROCESS_SAME_HOST, 2);
   EXPECT_EQ(RMW_ENDPOINT_LOCALITY_INTER_HOST, 3);
 }
 
@@ -86,7 +86,7 @@ TEST_F(LocalityAwareMessagingTest, RoutingScenario_IntraProcessCudaOptimal)
 TEST_F(LocalityAwareMessagingTest, RoutingScenario_InterProcessSharedMemory)
 {
   // Different processes on same host, both support CUDA
-  rmw_endpoint_locality_t locality = RMW_ENDPOINT_LOCALITY_INTER_PROCESS;
+  rmw_endpoint_locality_t locality = RMW_ENDPOINT_LOCALITY_INTER_PROCESS_SAME_HOST;
   std::vector<std::string> common_backends = {"cuda", "cpu"};
 
   // Should use shared memory with CUDA
@@ -134,10 +134,10 @@ TEST_F(LocalityAwareMessagingTest, SerializationStrategy_ZeroCopy)
 TEST_F(LocalityAwareMessagingTest, SerializationStrategy_SharedMemory)
 {
   // Inter-process with CUDA = shared memory
-  rmw_endpoint_locality_t locality = RMW_ENDPOINT_LOCALITY_INTER_PROCESS;
+  rmw_endpoint_locality_t locality = RMW_ENDPOINT_LOCALITY_INTER_PROCESS_SAME_HOST;
   std::string backend = "cuda";
 
-  bool use_shm = (locality == RMW_ENDPOINT_LOCALITY_INTER_PROCESS) &&
+  bool use_shm = (locality == RMW_ENDPOINT_LOCALITY_INTER_PROCESS_SAME_HOST) &&
     (backend == "cuda" || backend == "cpu");
   EXPECT_TRUE(use_shm);
 }
@@ -187,12 +187,12 @@ TEST_F(LocalityAwareMessagingTest, EndpointMap_MultipleKeys)
   std::map<std::string, rmw_endpoint_locality_t> subscriptions;
 
   subscriptions["/topic/ipc_cuda"] = RMW_ENDPOINT_LOCALITY_INTRA_PROCESS;
-  subscriptions["/topic/shm_cuda"] = RMW_ENDPOINT_LOCALITY_INTER_PROCESS;
+  subscriptions["/topic/shm_cuda"] = RMW_ENDPOINT_LOCALITY_INTER_PROCESS_SAME_HOST;
   subscriptions["/topic/cpu"] = RMW_ENDPOINT_LOCALITY_INTER_HOST;
 
   EXPECT_EQ(subscriptions.size(), 3u);
   EXPECT_EQ(subscriptions["/topic/ipc_cuda"], RMW_ENDPOINT_LOCALITY_INTRA_PROCESS);
-  EXPECT_EQ(subscriptions["/topic/shm_cuda"], RMW_ENDPOINT_LOCALITY_INTER_PROCESS);
+  EXPECT_EQ(subscriptions["/topic/shm_cuda"], RMW_ENDPOINT_LOCALITY_INTER_PROCESS_SAME_HOST);
   EXPECT_EQ(subscriptions["/topic/cpu"], RMW_ENDPOINT_LOCALITY_INTER_HOST);
 }
 
