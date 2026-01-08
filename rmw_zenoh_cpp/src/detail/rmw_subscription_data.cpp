@@ -703,9 +703,10 @@ rmw_ret_t SubscriptionData::take_one_message(
   // Copy payload data to the larger buffer
   std::memcpy(buffer_data, payload_data.data(), payload_data.size());
 
+  // FastCDR needs to know the actual data size, not the buffer size
   eprosima::fastcdr::FastBuffer fastbuffer(
     reinterpret_cast<char *>(buffer_data),
-    buffer_size);
+    payload_data.size());  // Use actual payload size, not allocated buffer size
 
   // Object that deserializes the data
   rmw_zenoh_cpp::Cdr deser(fastbuffer);
@@ -728,7 +729,7 @@ rmw_ret_t SubscriptionData::take_one_message(
         "[Subscription] Using locality-aware deserialization, locality=%d", msg_data->locality);
 
       std::cerr << "[take_one_message] Calling cdr_deserialize_with_locality, locality=" <<
-          msg_data->locality << "\n";
+        msg_data->locality << "\n";
 
       auto callbacks = static_cast<const message_type_support_callbacks_t *>(
         type_support_impl_);
@@ -739,7 +740,7 @@ rmw_ret_t SubscriptionData::take_one_message(
           ros_message,
           msg_data->locality);
         std::cerr << "[take_one_message] cdr_deserialize_with_locality returned: " <<
-            deserialize_success << "\n";
+          deserialize_success << "\n";
       } else {
         RMW_SET_ERROR_MSG(
             "Buffer-aware message type missing cdr_deserialize_with_locality function");
