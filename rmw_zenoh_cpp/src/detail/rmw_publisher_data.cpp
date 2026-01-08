@@ -83,12 +83,17 @@ std::shared_ptr<PublisherData> PublisherData::make(
   bool has_buffer_fields = callbacks->has_buffer_fields;
   bool is_buffer_aware = has_buffer_fields;
 
+  std::cerr << "[PublisherData::make] Topic: " << topic_name
+            << ", has_buffer_fields: " << has_buffer_fields
+            << ", is_buffer_aware: " << is_buffer_aware << "\n";
+
   // Query installed backends if message type has Buffer fields
   std::optional<std::vector<std::string>> backend_types = std::nullopt;
   std::vector<std::string> my_backend_types;
   if (is_buffer_aware) {
     my_backend_types = rmw_zenoh_cpp::get_installed_backend_types();
     backend_types = my_backend_types;
+    std::cerr << "[PublisherData::make] Found " << my_backend_types.size() << " backends\n";
     RMW_ZENOH_LOG_DEBUG_NAMED(
       "rmw_zenoh_cpp",
       "Creating Buffer-aware publisher for topic %s with %zu backends",
@@ -235,6 +240,10 @@ std::shared_ptr<PublisherData> PublisherData::make(
             pd->on_subscriber_discovered(entity);
           }
         });
+
+      // Manually add this local publisher to the graph cache so local subscribers can discover it
+      // Liveliness events from the same session don't trigger graph updates automatically
+      pub_data->graph_cache_->parse_put(pub_data->entity_->liveliness_keyexpr(), false);
     }
   }
 
@@ -304,7 +313,14 @@ rmw_ret_t PublisherData::publish_buffer_aware(
 
   // Serialize and publish to each endpoint
   rmw_ret_t ret = RMW_RET_OK;
+  size_t iteration = 0;
   for (auto & [key_suffix, subs] : groups) {
+    iteration++;
+    RMW_ZENOH_LOG_INFO_NAMED(
+      "rmw_zenoh_cpp",
+      "[Publisher] Processing endpoint group %zu/%zu with key_suffix='%s'",
+      iteration, groups.size(), key_suffix.c_str());
+
     auto endpoint = endpoints_[key_suffix];
     if (!endpoint) {
       continue;
@@ -320,6 +336,18 @@ rmw_ret_t PublisherData::publish_buffer_aware(
     // Serialize data using locality-aware serialization
     size_t max_data_length = type_support_->get_estimated_serialized_size(
       ros_message, type_support_impl_);
+
+    RMW_ZENOH_LOG_INFO_NAMED(
+      "rmw_zenoh_cpp",
+      "[Publisher] Estimated serialized size: %zu bytes", max_data_length);
+
+    // Quadruple the buffer size for safety (locality-aware serialization needs more space)
+    // TODO: Fix the size estimation in buffer_serialization.hpp to be more accurate
+    max_data_length = max_data_length * 4 + 16384;
+
+    RMW_ZENOH_LOG_INFO_NAMED(
+      "rmw_zenoh_cpp",
+      "[Publisher] Allocating buffer: %zu bytes (2x + 8KB safety margin)", max_data_length);
 
     rcutils_allocator_t * allocator = &rmw_node_->context->options.allocator;
     void * data = allocator->allocate(max_data_length, allocator->state);
@@ -337,6 +365,10 @@ rmw_ret_t PublisherData::publish_buffer_aware(
     eprosima::fastcdr::FastBuffer fastbuffer(reinterpret_cast<char *>(msg_bytes), max_data_length);
     rmw_zenoh_cpp::Cdr ser(fastbuffer);
 
+    RMW_ZENOH_LOG_INFO_NAMED(
+      "rmw_zenoh_cpp",
+      "[Publisher] Starting locality-aware serialization...");
+
     // Use locality-aware serialization for Buffer-aware messages
     if (!type_support_->serialize_ros_message_with_locality(
       ros_message, ser.get_cdr(), type_support_impl_, locality))
@@ -347,6 +379,20 @@ rmw_ret_t PublisherData::publish_buffer_aware(
 
     size_t data_length = ser.get_serialized_data_length();
 
+    RMW_ZENOH_LOG_INFO_NAMED(
+      "rmw_zenoh_cpp",
+      "[Publisher] Serialization complete, actual size: %zu bytes (allocated: %zu, usage: %.1f%%)",
+      data_length, max_data_length, (data_length * 100.0) / max_data_length);
+
+    // Sanity check: ensure we didn't overflow
+    if (data_length > max_data_length) {
+      RMW_ZENOH_LOG_ERROR_NAMED(
+        "rmw_zenoh_cpp",
+        "[Publisher] CRITICAL: Serialized size %zu exceeds allocated buffer %zu!",
+        data_length, max_data_length);
+      return RMW_RET_ERROR;
+    }
+
     // Publish to this endpoint
     // Use deleter to manage memory since Zenoh takes ownership
     auto deleter = [data, allocator](uint8_t *) {
@@ -355,13 +401,48 @@ rmw_ret_t PublisherData::publish_buffer_aware(
     auto payload = zenoh::Bytes(msg_bytes, data_length, deleter);
     always_free_data.cancel();  // Zenoh now owns the memory
 
+    // Create attachment AFTER serialization
+    RMW_ZENOH_LOG_INFO_NAMED(
+      "rmw_zenoh_cpp",
+      "[Publisher] Creating attachment data...");
+
+    int64_t source_timestamp = rmw_zenoh_cpp::get_system_time_in_ns();
+    auto gid = entity_->copy_gid();
+
+    RMW_ZENOH_LOG_INFO_NAMED(
+      "rmw_zenoh_cpp",
+      "[Publisher] Creating AttachmentData object...");
+
+    auto attachment_data = rmw_zenoh_cpp::AttachmentData(
+      sequence_number_++, source_timestamp, gid);
+
+    RMW_ZENOH_LOG_INFO_NAMED(
+      "rmw_zenoh_cpp",
+      "[Publisher] Serializing attachment to zbytes...");
+
+    auto attachment_bytes = attachment_data.serialize_to_zbytes();
+
+    RMW_ZENOH_LOG_INFO_NAMED(
+      "rmw_zenoh_cpp",
+      "[Publisher] Attachment created successfully");
+
     zenoh::ext::AdvancedPublisher::PutOptions options =
       zenoh::ext::AdvancedPublisher::PutOptions::create_default();
-    // Note: timestamp is set via put_options if needed, not directly on AdvancedPublisher::PutOptions
+    // Set attachment directly without std::make_optional (same as non-buffer-aware path)
+    options.put_options.attachment = std::move(attachment_bytes);
 
     zenoh::ZResult result;
     if (endpoint->pub.has_value()) {
+      RMW_ZENOH_LOG_INFO_NAMED(
+        "rmw_zenoh_cpp",
+        "[Publisher] Calling Zenoh put...");
+
       endpoint->pub.value().put(std::move(payload), std::move(options), &result);
+
+      RMW_ZENOH_LOG_INFO_NAMED(
+        "rmw_zenoh_cpp",
+        "[Publisher] Zenoh put completed with result: %d", result);
+
       if (result != Z_OK) {
         RMW_ZENOH_LOG_ERROR_NAMED(
           "rmw_zenoh_cpp",
@@ -370,6 +451,10 @@ rmw_ret_t PublisherData::publish_buffer_aware(
       }
     }
   }
+
+  RMW_ZENOH_LOG_INFO_NAMED(
+    "rmw_zenoh_cpp",
+    "[Publisher] publish_buffer_aware() returning successfully");
 
   return ret;
 }

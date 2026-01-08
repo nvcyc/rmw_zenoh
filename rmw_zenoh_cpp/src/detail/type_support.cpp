@@ -19,6 +19,7 @@
 #include <cassert>
 #include <functional>
 #include <memory>
+#include <iostream>
 
 #include "rmw/error_handling.h"
 
@@ -183,8 +184,10 @@ bool TypeSupport::deserialize_ros_message_with_locality(
   assert(impl);
 
   try {
+    std::cerr << "[TypeSupport] deserialize_ros_message_with_locality: reading encapsulation...\n";
     // Deserialize encapsulation.
     deser.read_encapsulation();
+    std::cerr << "[TypeSupport] Encapsulation read successfully\n";
 
     // If type is not empty, deserialize message
     if (has_data_) {
@@ -192,6 +195,7 @@ bool TypeSupport::deserialize_ros_message_with_locality(
 
       // Use locality-aware deserialization if available (for messages with Buffer fields)
       if (callbacks->cdr_deserialize_with_locality) {
+        std::cerr << "[TypeSupport] Calling cdr_deserialize_with_locality for " << get_name() << "\n";
         return callbacks->cdr_deserialize_with_locality(deser, ros_message, locality);
       } else {
         // Fall back to regular deserialization for messages without Buffer fields
@@ -204,6 +208,7 @@ bool TypeSupport::deserialize_ros_message_with_locality(
     deser >> dump;
     (void)dump;
   } catch (const eprosima::fastcdr::exception::Exception & e) {
+    std::cerr << "[TypeSupport] EXCEPTION during deserialization: " << e.what() << "\n";
     RMW_SET_ERROR_MSG_WITH_FORMAT_STRING(
       "Fast CDR exception deserializing message of type %s. %s",
       get_name(), e.what());

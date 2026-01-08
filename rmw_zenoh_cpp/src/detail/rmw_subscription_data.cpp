@@ -87,6 +87,10 @@ std::shared_ptr<SubscriptionData> SubscriptionData::make(
   bool has_buffer_fields = callbacks->has_buffer_fields;
   bool is_buffer_aware = has_buffer_fields;
 
+  std::cerr << "[SubscriptionData::make] Topic: " << topic_name
+            << ", has_buffer_fields: " << has_buffer_fields
+            << ", is_buffer_aware: " << is_buffer_aware << "\n";
+
   // Query installed backends if message type has Buffer fields
   std::optional<std::vector<std::string>> backend_types = std::nullopt;
   std::vector<std::string> my_backend_types;
@@ -168,6 +172,13 @@ std::shared_ptr<SubscriptionData> SubscriptionData::make(
           sd->on_publisher_discovered(entity);
         }
       });
+
+    // Manually add this local subscriber to the graph cache so local publishers can discover it
+    // Liveliness events from the same session don't trigger graph updates automatically
+    graph_cache->parse_put(sub_data->entity_->liveliness_keyexpr(), false);
+    RMW_ZENOH_LOG_INFO_NAMED(
+      "rmw_zenoh_cpp",
+      "[Subscription] Manually added local subscriber to graph cache for discovery");
   }
 
   // Register with Host Endpoint Manager
@@ -328,6 +339,18 @@ bool SubscriptionData::init()
 
   initialized_ = true;
 
+  if (is_buffer_aware_) {
+    RMW_ZENOH_LOG_INFO_NAMED(
+      "rmw_zenoh_cpp",
+      "[Subscription] Initialized buffer-aware subscription, base key: '%s' (endpoints created dynamically)",
+      entity_->topic_info()->topic_keyexpr_.c_str());
+  } else {
+    RMW_ZENOH_LOG_INFO_NAMED(
+      "rmw_zenoh_cpp",
+      "[Subscription] Initialized simple subscription on key: '%s'",
+      entity_->topic_info()->topic_keyexpr_.c_str());
+  }
+
   return true;
 }
 
@@ -380,6 +403,10 @@ void SubscriptionData::on_publisher_discovered(const liveliness::Entity & entity
 {
   std::lock_guard<std::mutex> lock(mutex_);
 
+  RMW_ZENOH_LOG_INFO_NAMED(
+    "rmw_zenoh_cpp",
+    "[Subscription] on_publisher_discovered callback triggered!");
+
   if (!is_buffer_aware_) {
     return;  // Should not be called for non-Buffer-aware subscriptions
   }
@@ -422,7 +449,12 @@ void SubscriptionData::on_publisher_discovered(const liveliness::Entity & entity
   std::string key_suffix = rmw_zenoh_cpp::compute_endpoint_key_suffix(
     locality, pub_backends, my_backend_types_);
 
-  std::string suffixed_key = entity_->topic_info()->topic_keyexpr_ + key_suffix;
+  std::string suffixed_key = entity_->topic_info()->topic_keyexpr_ + "/" + key_suffix;
+
+  RMW_ZENOH_LOG_INFO_NAMED(
+    "rmw_zenoh_cpp",
+    "[Subscription] Discovered publisher! locality=%d, key_suffix='%s', suffixed_key='%s'",
+    locality, key_suffix.c_str(), suffixed_key.c_str());
 
   // Create subscription for this suffixed key if not already exists
   if (sub_endpoints_.find(suffixed_key) == sub_endpoints_.end()) {
@@ -513,9 +545,9 @@ void SubscriptionData::create_subscription_for_key(
   endpoint->locality = locality;
   sub_endpoints_[key] = endpoint;
 
-  RMW_ZENOH_LOG_DEBUG_NAMED(
+  RMW_ZENOH_LOG_INFO_NAMED(
     "rmw_zenoh_cpp",
-    "Created Buffer-aware subscription for key: %s with locality: %d",
+    "[Subscription] Created buffer-aware subscription for key: '%s' with locality: %d",
     key.c_str(), locality);
 }
 
@@ -648,41 +680,95 @@ rmw_ret_t SubscriptionData::take_one_message(
       "SubscriptionData not able to get slice data");
     return RMW_RET_ERROR;
   }
-  // Object that manages the raw buffer
-  eprosima::fastcdr::FastBuffer fastbuffer(
-    reinterpret_cast<char *>(const_cast<uint8_t *>(payload_data.data())),
+  RMW_ZENOH_LOG_INFO_NAMED(
+    "rmw_zenoh_cpp",
+    "[Subscription] Preparing to deserialize message, payload size: %zu bytes",
     payload_data.size());
 
-  // Object that serializes the data
+  // Object that manages the raw buffer
+  // FastCDR needs extra space for internal operations during deserialization
+  // Allocate a larger buffer and copy the payload data
+  size_t buffer_size = payload_data.size() * 4 + 65536;  // 4x + 64KB safety margin (very conservative)
+  rcutils_allocator_t * allocator = &rmw_node_->context->options.allocator;
+  void * buffer_data = allocator->allocate(buffer_size, allocator->state);
+  if (buffer_data == nullptr) {
+    RMW_SET_ERROR_MSG("failed to allocate deserialization buffer");
+    return RMW_RET_ERROR;
+  }
+  auto cleanup_buffer = rcpputils::make_scope_exit(
+    [allocator, buffer_data]() {
+      allocator->deallocate(buffer_data, allocator->state);
+    });
+
+  // Copy payload data to the larger buffer
+  std::memcpy(buffer_data, payload_data.data(), payload_data.size());
+
+  eprosima::fastcdr::FastBuffer fastbuffer(
+    reinterpret_cast<char *>(buffer_data),
+    buffer_size);
+
+  // Object that deserializes the data
   rmw_zenoh_cpp::Cdr deser(fastbuffer);
 
-  // Use locality-aware deserialization for Buffer-aware subscriptions
-  bool deserialize_success;
-  if (is_buffer_aware_) {
-    auto callbacks = static_cast<const message_type_support_callbacks_t *>(
-      type_support_impl_);
+  std::cerr << "[take_one_message] FastBuffer created with buffer_size=" << buffer_size
+            << ", payload_size=" << payload_data.size()
+            << ", is_buffer_aware_=" << is_buffer_aware_ << "\n";
 
-    if (callbacks->cdr_deserialize_with_locality) {
-      deserialize_success = callbacks->cdr_deserialize_with_locality(
+  RMW_ZENOH_LOG_INFO_NAMED(
+    "rmw_zenoh_cpp",
+    "[Subscription] FastBuffer created, starting deserialization...");
+
+  // Use locality-aware deserialization for Buffer-aware subscriptions
+  bool deserialize_success = false;
+
+  try {
+    if (is_buffer_aware_) {
+      RMW_ZENOH_LOG_INFO_NAMED(
+        "rmw_zenoh_cpp",
+        "[Subscription] Using locality-aware deserialization, locality=%d", msg_data->locality);
+
+      std::cerr << "[take_one_message] Calling cdr_deserialize_with_locality, locality=" <<
+          msg_data->locality << "\n";
+
+      auto callbacks = static_cast<const message_type_support_callbacks_t *>(
+        type_support_impl_);
+
+      if (callbacks->cdr_deserialize_with_locality) {
+        deserialize_success = callbacks->cdr_deserialize_with_locality(
+          deser.get_cdr(),
+          ros_message,
+          msg_data->locality);
+        std::cerr << "[take_one_message] cdr_deserialize_with_locality returned: " <<
+            deserialize_success << "\n";
+      } else {
+        RMW_SET_ERROR_MSG(
+            "Buffer-aware message type missing cdr_deserialize_with_locality function");
+        return RMW_RET_ERROR;
+      }
+    } else {
+      // Simple path: standard deserialization
+      deserialize_success = type_support_->deserialize_ros_message(
         deser.get_cdr(),
         ros_message,
-        msg_data->locality);
-    } else {
-      RMW_SET_ERROR_MSG("Buffer-aware message type missing cdr_deserialize_with_locality function");
-      return RMW_RET_ERROR;
+        type_support_impl_);
     }
-  } else {
-    // Simple path: standard deserialization
-    deserialize_success = type_support_->deserialize_ros_message(
-      deser.get_cdr(),
-      ros_message,
-      type_support_impl_);
+  } catch (const std::exception & e) {
+    std::cerr << "[take_one_message] EXCEPTION CAUGHT: " << e.what() << "\n";
+    RMW_ZENOH_LOG_ERROR_NAMED(
+      "rmw_zenoh_cpp",
+      "[Subscription] EXCEPTION during deserialization: %s", e.what());
+    RMW_SET_ERROR_MSG_WITH_FORMAT_STRING("Deserialization exception: %s", e.what());
+    return RMW_RET_ERROR;
   }
 
   if (!deserialize_success) {
     RMW_SET_ERROR_MSG("could not deserialize ROS message");
     return RMW_RET_ERROR;
   }
+
+  RMW_ZENOH_LOG_INFO_NAMED(
+    "rmw_zenoh_cpp",
+    "[Subscription] Deserialization completed successfully");
 
   if (message_info != nullptr) {
     message_info->source_timestamp = msg_data->attachment.source_timestamp();
