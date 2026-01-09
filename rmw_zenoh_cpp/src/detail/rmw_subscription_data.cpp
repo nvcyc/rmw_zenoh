@@ -701,13 +701,19 @@ rmw_ret_t SubscriptionData::take_one_message(
     });
 
   // Copy payload data to the larger buffer
+  std::cerr << "[take_one_message] About to copy " << payload_data.size() << 
+    " bytes to buffer (allocated: " << buffer_size << " bytes)\n";
   std::memcpy(buffer_data, payload_data.data(), payload_data.size());
+  std::cerr << "[take_one_message] Memory copy complete\n";
 
   // FastCDR needs to know the actual data size, not the buffer size
+  std::cerr << "[take_one_message] Creating FastBuffer with payload_size=" << 
+    payload_data.size() << "\n";
   eprosima::fastcdr::FastBuffer fastbuffer(
     reinterpret_cast<char *>(buffer_data),
     payload_data.size());  // Use actual payload size, not allocated buffer size
 
+  std::cerr << "[take_one_message] Creating Cdr deserializer\n";
   // Object that deserializes the data
   rmw_zenoh_cpp::Cdr deser(fastbuffer);
 
@@ -728,24 +734,20 @@ rmw_ret_t SubscriptionData::take_one_message(
         "rmw_zenoh_cpp",
         "[Subscription] Using locality-aware deserialization, locality=%d", msg_data->locality);
 
-      std::cerr << "[take_one_message] Calling cdr_deserialize_with_locality, locality=" <<
+      std::cerr << "[take_one_message] Calling deserialize_ros_message_with_locality, locality=" <<
         msg_data->locality << "\n";
-
-      auto callbacks = static_cast<const message_type_support_callbacks_t *>(
-        type_support_impl_);
-
-      if (callbacks->cdr_deserialize_with_locality) {
-        deserialize_success = callbacks->cdr_deserialize_with_locality(
-          deser.get_cdr(),
-          ros_message,
-          msg_data->locality);
-        std::cerr << "[take_one_message] cdr_deserialize_with_locality returned: " <<
-          deserialize_success << "\n";
-      } else {
-        RMW_SET_ERROR_MSG(
-            "Buffer-aware message type missing cdr_deserialize_with_locality function");
-        return RMW_RET_ERROR;
-      }
+      std::cerr << "[take_one_message] CDR state before deserialize - buffer_size=" << 
+        buffer_size << ", payload_size=" << payload_data.size() << "\n";
+      
+      // Use type_support_->deserialize_ros_message_with_locality() which handles encapsulation reading
+      deserialize_success = type_support_->deserialize_ros_message_with_locality(
+        deser.get_cdr(),
+        ros_message,
+        type_support_impl_,
+        msg_data->locality);
+      
+      std::cerr << "[take_one_message] deserialize_ros_message_with_locality returned: " <<
+        deserialize_success << "\n";
     } else {
       // Simple path: standard deserialization
       deserialize_success = type_support_->deserialize_ros_message(
