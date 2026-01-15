@@ -334,13 +334,17 @@ public:
   // Shutdown the Zenoh session.
   rmw_ret_t shutdown()
   {
+    std::cerr << "[RMW Context] shutdown() ENTERED\n" << std::flush;
     {
       std::lock_guard<std::recursive_mutex> lock(mutex_);
+      std::cerr << "[RMW Context] shutdown() acquired mutex\n" << std::flush;
       rmw_ret_t ret = RMW_RET_OK;
       if (is_shutdown_) {
+        std::cerr << "[RMW Context] shutdown() already shutdown, returning\n" << std::flush;
         return ret;
       }
 
+      std::cerr << "[RMW Context] shutdown() undeclaring graph_subscriber_\n" << std::flush;
       zenoh::ZResult result;
       std::move(graph_subscriber_).value().undeclare(&result);
       if (result != Z_OK) {
@@ -349,19 +353,47 @@ public:
           "Unable to undeclare the liveliness token");
         return RMW_RET_ERROR;
       }
+      std::cerr << "[RMW Context] shutdown() graph_subscriber_ undeclared\n" << std::flush;
 
       is_shutdown_ = true;
 
       // We specifically do *not* hold the mutex_ while tearing down the session; this allows us
       // to avoid an AB/BA deadlock if shutdown is racing with graph_sub_data_handler().
+      std::cerr << "[RMW Context] shutdown() releasing mutex\n" << std::flush;
     }
 
+    // Explicitly close the session before dropping it
+    // The close() operation is asynchronous and spawns background threads
+    // std::cerr << "[RMW Context] shutdown() checking session status\n" << std::flush;
+    // if (session_ && !session_->is_closed()) {
+    //   std::cerr << "[RMW Context] shutdown() closing Zenoh session\n" << std::flush;
+    //   RMW_ZENOH_LOG_DEBUG_NAMED("rmw_zenoh_cpp", "Closing Zenoh session");
+    //   zenoh::ZResult result;
+    //   session_->close(zenoh::Session::SessionCloseOptions::create_default(), &result);
+    //   if (result != Z_OK) {
+    //     RMW_ZENOH_LOG_WARN_NAMED("rmw_zenoh_cpp", "Failed to close Zenoh session");
+    //   }
+    //   std::cerr << "[RMW Context] shutdown() session->close() returned\n" << std::flush;
+
+    //   // Give Zenoh background threads time to complete shutdown
+    //   // The Zenoh runtime spawns threads (app-0, net-0, tx-0, rx-0, etc.) that need
+    //   // time to properly terminate after close() is called
+    //   std::cerr << "[RMW Context] shutdown() sleeping 500ms for Zenoh threads\n" << std::flush;
+    //   std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    //   std::cerr << "[RMW Context] shutdown() sleep completed\n" << std::flush;
+    // }
+
     // Drop the shared session.
+    std::cerr << "[RMW Context] shutdown() resetting session_\n" << std::flush;
     session_.reset();
+    std::cerr << "[RMW Context] shutdown() session_ reset complete\n" << std::flush;
 
     // Cleanup buffer backend system before plugins are unloaded
+    std::cerr << "[RMW Context] shutdown() shutting down buffer backends\n" << std::flush;
     rmw_zenoh_cpp::shutdown_buffer_backends();
+    std::cerr << "[RMW Context] shutdown() buffer backends shutdown complete\n" << std::flush;
 
+    std::cerr << "[RMW Context] shutdown() EXITING\n" << std::flush;
     return RMW_RET_OK;
   }
 

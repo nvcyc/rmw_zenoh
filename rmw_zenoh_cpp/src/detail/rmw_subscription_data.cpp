@@ -751,8 +751,10 @@ rmw_ret_t SubscriptionData::shutdown()
   graph_cache_->remove_qos_event_callbacks(entity_->gid_hash());
 
   // Unregister discovery callbacks if Buffer-aware
+  // NOTE: Skipping to avoid deadlock with graph subscriber callback thread
+  // Callbacks will be cleared when RMW context is destroyed
   if (is_buffer_aware_) {
-    graph_cache_->unregister_discovery_callbacks(entity_->gid_hash());
+    // graph_cache_->unregister_discovery_callbacks(entity_->gid_hash()); // DISABLED: causes deadlock
   }
 
   // Unregister this subscription from the ROS graph.
