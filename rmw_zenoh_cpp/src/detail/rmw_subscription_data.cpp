@@ -750,7 +750,7 @@ rmw_ret_t SubscriptionData::take_one_message(
   std::unique_ptr<Message> msg_data = std::move(message_queue_.front());
   message_queue_.pop_front();
 
-  auto & payload_data = msg_data->payload;
+  const Payload & payload_data = msg_data->payload;
 
   if (payload_data.empty()) {
     RMW_ZENOH_LOG_DEBUG_NAMED(
@@ -889,7 +889,7 @@ rmw_ret_t SubscriptionData::take_serialized_message(
   std::unique_ptr<Message> msg_data = std::move(message_queue_.front());
   message_queue_.pop_front();
 
-  auto & payload_data = msg_data->payload;
+  const Payload & payload_data = msg_data->payload;
 
   if (payload_data.empty()) {
     RMW_ZENOH_LOG_DEBUG_NAMED(
@@ -907,7 +907,7 @@ rmw_ret_t SubscriptionData::take_serialized_message(
   serialized_message->buffer_length = payload_data.size();
   memcpy(
     serialized_message->buffer,
-    reinterpret_cast<char *>(const_cast<uint8_t *>(payload_data.data())),
+    payload_data.data(),
     payload_data.size());
 
   *taken = true;

@@ -272,6 +272,8 @@ std::shared_ptr<PublisherData> PublisherData::make(
       build_endpoint_info_from_entity(*pub_data->entity_, RMW_ENDPOINT_PUBLISHER);
   }
 
+  rmw_context_impl_t * context_impl = static_cast<rmw_context_impl_t *>(node->context->impl);
+
   // Register discovery callback for Buffer-aware publishers
   if (is_buffer_aware) {
     pub_data->graph_cache_ = context_impl->graph_cache();
