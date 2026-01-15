@@ -192,6 +192,12 @@ bool TypeSupport::deserialize_ros_message_with_endpoint(
     // If type is not empty, deserialize message
     if (has_data_) {
       auto callbacks = static_cast<const message_type_support_callbacks_t *>(impl);
+      std::cerr << "[TypeSupport] callbacks=" << callbacks
+                << ", cdr_deserialize_with_endpoint="
+                << reinterpret_cast<const void *>(callbacks->cdr_deserialize_with_endpoint)
+                << ", cdr_deserialize="
+                << reinterpret_cast<const void *>(callbacks->cdr_deserialize)
+                << "\n";
 
       // Use endpoint-aware deserialization if available (for messages with Buffer fields)
       if (callbacks->cdr_deserialize_with_endpoint) {

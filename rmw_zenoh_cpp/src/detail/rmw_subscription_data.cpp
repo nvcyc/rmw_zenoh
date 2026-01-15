@@ -58,6 +58,34 @@ std::string gid_to_hex(const rmw_gid_t & gid)
   }
   return out.str();
 }
+
+std::string gid_array_to_hex(const std::array<uint8_t, RMW_GID_STORAGE_SIZE> & gid_array)
+{
+  std::ostringstream out;
+  out << std::hex << std::setfill('0');
+  for (size_t i = 0; i < gid_array.size(); ++i) {
+    out << std::setw(2) << static_cast<int>(gid_array[i]);
+  }
+  return out.str();
+}
+
+const char * entity_type_to_string(rmw_zenoh_cpp::liveliness::EntityType type)
+{
+  switch (type) {
+    case rmw_zenoh_cpp::liveliness::EntityType::Node:
+      return "Node";
+    case rmw_zenoh_cpp::liveliness::EntityType::Publisher:
+      return "Publisher";
+    case rmw_zenoh_cpp::liveliness::EntityType::Subscription:
+      return "Subscription";
+    case rmw_zenoh_cpp::liveliness::EntityType::Service:
+      return "Service";
+    case rmw_zenoh_cpp::liveliness::EntityType::Client:
+      return "Client";
+    default:
+      return "Unknown";
+  }
+}
 }  // namespace
 
 namespace rmw_zenoh_cpp
@@ -106,6 +134,11 @@ std::shared_ptr<SubscriptionData> SubscriptionData::make(
   std::cerr << "[SubscriptionData::make] Topic: " << topic_name
             << ", has_buffer_fields: " << has_buffer_fields
             << ", is_buffer_aware: " << is_buffer_aware << "\n";
+  std::cerr << "[SubscriptionData::make] callbacks=" << callbacks
+            << ", type_support=" << type_support
+            << ", type_support->typesupport_identifier="
+            << (type_support ? type_support->typesupport_identifier : "null")
+            << "\n";
 
   // Query installed backends if message type has Buffer fields
   std::optional<std::unordered_map<std::string, std::string>> backend_types = std::nullopt;
@@ -456,6 +489,16 @@ void SubscriptionData::on_publisher_discovered(const liveliness::Entity & entity
     return;  // Should not be called for non-Buffer-aware subscriptions
   }
 
+  if (entity.type() != liveliness::EntityType::Publisher) {
+    RMW_ZENOH_LOG_DEBUG_NAMED(
+      "rmw_zenoh_cpp",
+      "[Subscription] Ignoring discovered entity type=%s node='%s' ns='%s'",
+      entity_type_to_string(entity.type()),
+      entity.node_name().c_str(),
+      entity.node_namespace().c_str());
+    return;
+  }
+
   // Parse publisher backend list from liveliness key
   const auto & topic_info = entity.topic_info();
   if (!topic_info.has_value() || !topic_info->backend_aux_info_.has_value()) {
@@ -508,8 +551,9 @@ void SubscriptionData::on_publisher_discovered(const liveliness::Entity & entity
       storage.info.node_namespace = storage.node_namespace.c_str();
       storage.info.topic_type = storage.topic_type.c_str();
       storage.info.endpoint_type = endpoint_type;
-      auto gid_array = entity.copy_gid();
-      std::memcpy(storage.info.endpoint_gid, gid_array.data(), RMW_GID_STORAGE_SIZE);
+      auto rmw_gid = rmw_zenoh_cpp::entity_gid_to_rmw_gid(
+        entity, rmw_zenoh_cpp::rmw_zenoh_identifier);
+      std::memcpy(storage.info.endpoint_gid, rmw_gid.data, RMW_GID_STORAGE_SIZE);
       return storage;
     };
 
@@ -526,12 +570,48 @@ void SubscriptionData::on_publisher_discovered(const liveliness::Entity & entity
   auto backend_compat = rmw_zenoh_cpp::evaluate_backend_compatibility(
     pub_endpoint_info.info, existing_endpoints, backend_groups);
 
-  rmw_gid_t local_gid = {};
-  auto local_gid_array = entity_->copy_gid();
-  std::memcpy(local_gid.data, local_gid_array.data(), RMW_GID_STORAGE_SIZE);
+  rmw_gid_t local_gid = rmw_zenoh_cpp::entity_gid_to_rmw_gid(
+    *entity_, rmw_zenoh_cpp::rmw_zenoh_identifier);
 
-  std::string full_key = entity_->topic_info()->topic_keyexpr_ + "/" +
-    entity.zid() + "/" + gid_to_hex(local_gid);
+  const std::string base_key = entity_->topic_info()->topic_keyexpr_;
+  std::string full_key = base_key + "/" + entity.zid() + "/" + gid_to_hex(local_gid);
+
+  RMW_ZENOH_LOG_INFO_NAMED(
+    "rmw_zenoh_cpp",
+    "[Subscription] key space check: base='%s' publisher_zid='%s' subscriber_gid='%s'",
+    base_key.c_str(),
+    entity.zid().c_str(),
+    gid_to_hex(local_gid).c_str());
+  RMW_ZENOH_LOG_INFO_NAMED(
+    "rmw_zenoh_cpp",
+    "[Subscription] local entity keyexpr='%s'",
+    entity_->liveliness_keyexpr().c_str());
+  RMW_ZENOH_LOG_INFO_NAMED(
+    "rmw_zenoh_cpp",
+    "[Subscription] local entity_gid='%s'",
+    gid_array_to_hex(entity_->copy_gid()).c_str());
+
+  if (entity.topic_info().has_value()) {
+    RMW_ZENOH_LOG_INFO_NAMED(
+      "rmw_zenoh_cpp",
+      "[Subscription] publisher base key: '%s' (local base key: '%s')",
+      entity.topic_info()->topic_keyexpr_.c_str(),
+      base_key.c_str());
+  }
+  RMW_ZENOH_LOG_INFO_NAMED(
+    "rmw_zenoh_cpp",
+    "[Subscription] discovered entity type=%s node='%s' ns='%s'",
+    entity_type_to_string(entity.type()),
+    entity.node_name().c_str(),
+    entity.node_namespace().c_str());
+  RMW_ZENOH_LOG_INFO_NAMED(
+    "rmw_zenoh_cpp",
+    "[Subscription] discovered publisher entity keyexpr='%s'",
+    entity.liveliness_keyexpr().c_str());
+  RMW_ZENOH_LOG_INFO_NAMED(
+    "rmw_zenoh_cpp",
+    "[Subscription] discovered publisher entity_gid='%s'",
+    gid_array_to_hex(entity.copy_gid()).c_str());
 
   RMW_ZENOH_LOG_INFO_NAMED(
     "rmw_zenoh_cpp",
@@ -589,17 +669,31 @@ void SubscriptionData::create_subscription_for_key(
     }
   }
 
+  rmw_gid_t publisher_gid = {};
+  std::memcpy(publisher_gid.data, publisher_info.info.endpoint_gid, RMW_GID_STORAGE_SIZE);
+  RMW_ZENOH_LOG_INFO_NAMED(
+    "rmw_zenoh_cpp",
+    "[Subscription] Creating endpoint for key='%s' (publisher gid=%s)",
+    key.c_str(),
+    gid_to_hex(publisher_gid).c_str());
+
   auto endpoint = std::make_shared<SubscriptionEndpoint>();
   endpoint->key = key;
   endpoint->publisher_info = publisher_info;
   const rmw_topic_endpoint_info_t * endpoint_info_ptr = &endpoint->publisher_info.info;
 
   std::weak_ptr<SubscriptionData> data_wp = shared_from_this();
-  auto on_sample = [data_wp, endpoint_info_ptr](const zenoh::Sample & sample) {
+  auto on_sample = [data_wp, endpoint_info_ptr, key](const zenoh::Sample & sample) {
       auto sub_data = data_wp.lock();
       if (sub_data == nullptr) {
         return;
       }
+
+      RMW_ZENOH_LOG_INFO_NAMED(
+        "rmw_zenoh_cpp",
+        "[Subscription] Received sample on key='%s' (sample key='%s')",
+        key.c_str(),
+        std::string(sample.get_keyexpr().as_string_view()).c_str());
 
       auto attachment = sample.get_attachment();
       if (!attachment.has_value()) {
@@ -743,6 +837,14 @@ rmw_ret_t SubscriptionData::take_one_message(
   *taken = false;
 
   std::lock_guard<std::mutex> lock(mutex_);
+  if (entity_ && entity_->topic_info().has_value()) {
+    RMW_ZENOH_LOG_INFO_NAMED(
+      "rmw_zenoh_cpp",
+      "[Subscription] take_one_message topic='%s' is_buffer_aware=%d queue_size=%zu",
+      entity_->topic_info().value().name_.c_str(),
+      is_buffer_aware_,
+      message_queue_.size());
+  }
   if (is_shutdown_ || message_queue_.empty()) {
     // This tells rcl that the check for a new message was done, but no messages have come in yet.
     return RMW_RET_OK;
@@ -938,6 +1040,12 @@ void SubscriptionData::add_new_message(
   if (is_shutdown_) {
     return;
   }
+  RMW_ZENOH_LOG_INFO_NAMED(
+    "rmw_zenoh_cpp",
+    "[Subscription] add_new_message topic='%s' is_buffer_aware=%d payload_size=%zu",
+    topic_name.c_str(),
+    is_buffer_aware_,
+    msg->payload.size());
   const rmw_qos_profile_t adapted_qos_profile = entity_->topic_info().value().qos_;
   if (adapted_qos_profile.history != RMW_QOS_POLICY_HISTORY_KEEP_ALL &&
     message_queue_.size() >= adapted_qos_profile.depth)
