@@ -38,10 +38,19 @@ enum class EntityType : uint8_t
   SERVICE_SERVER = 3    ///< Service Server
 };
 
+/// Locality enumeration for endpoint proximity
+enum class EndpointLocality : uint8_t
+{
+  UNDEFINED = 0,
+  INTRA_PROCESS = 1,
+  INTER_PROCESS_SAME_HOST = 2,
+  INTER_HOST = 3
+};
+
 /// Locality information for an endpoint
 struct LocalityInfo
 {
-  rmw_endpoint_locality_t locality;  ///< Locality classification
+  EndpointLocality locality;  ///< Locality classification
   EntityType entity_type;             ///< Type of the endpoint
   uint64_t remote_instance_id;        ///< Instance ID (for debugging)
   bool found;                         ///< false = not on this host
@@ -220,7 +229,7 @@ private:
   // Local cache for lock-free queries
   struct CachedEndpointInfo
   {
-    rmw_endpoint_locality_t locality;
+    EndpointLocality locality;
     uint64_t instance_id;
     EntityType entity_type;
   };

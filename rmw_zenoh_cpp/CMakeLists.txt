@@ -16,7 +16,6 @@ find_package(ament_cmake REQUIRED)
 
 find_package(ament_index_cpp REQUIRED)
 find_package(fastcdr CONFIG REQUIRED)
-find_package(host_endpoint_manager REQUIRED)
 find_package(rcpputils REQUIRED)
 find_package(rcutils REQUIRED)
 find_package(rosidl_buffer_registry REQUIRED)
@@ -71,7 +70,6 @@ target_link_libraries(rmw_zenoh_cpp
   PRIVATE
     ament_index_cpp::ament_index_cpp
     fastcdr
-    host_endpoint_manager::host_endpoint_manager
     rcpputils::rcpputils
     rcutils::rcutils
     rosidl_buffer_registry::rosidl_buffer_registry

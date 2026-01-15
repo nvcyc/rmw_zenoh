@@ -38,8 +38,6 @@
 #include "qos.hpp"
 #include "rmw_context_impl_s.hpp"
 
-#include "host_endpoint_manager/host_endpoint_manager.hpp"
-
 #include "rcpputils/scope_exit.hpp"
 
 #include "rmw/error_handling.h"
@@ -163,21 +161,6 @@ std::shared_ptr<ClientData> ClientData::make(
       request_type_support,
       response_type_support
     });
-
-  // Register with Host Endpoint Manager
-  auto context_impl = static_cast<rmw_context_impl_t *>(node->context->impl);
-  auto endpoint_manager = context_impl->endpoint_manager();
-  if (endpoint_manager != nullptr) {
-    rmw_gid_t gid = rmw_zenoh_cpp::entity_gid_to_rmw_gid(
-      *entity, rmw_zenoh_cpp::rmw_zenoh_identifier);
-
-    if (!endpoint_manager->register_service_client(gid, service_name.c_str())) {
-      RMW_ZENOH_LOG_ERROR_NAMED(
-        "rmw_zenoh_cpp",
-        "Failed to register service client with Host Endpoint Manager");
-      return nullptr;
-    }
-  }
 
   return client_data;
 }
@@ -544,21 +527,6 @@ rmw_ret_t ClientData::shutdown()
       "rmw_zenoh_cpp",
       "Unable to undeclare the querier");
     return RMW_RET_ERROR;
-  }
-
-  // Unregister from Host Endpoint Manager
-  auto context_impl = static_cast<rmw_context_impl_t *>(rmw_node_->context->impl);
-  auto endpoint_manager = context_impl->endpoint_manager();
-  if (endpoint_manager != nullptr) {
-    rmw_gid_t gid = rmw_zenoh_cpp::entity_gid_to_rmw_gid(
-      *entity_, rmw_zenoh_cpp::rmw_zenoh_identifier);
-
-    if (!endpoint_manager->unregister_endpoint(gid)) {
-      RMW_ZENOH_LOG_ERROR_NAMED(
-        "rmw_zenoh_cpp",
-        "Failed to unregister service client from Host Endpoint Manager");
-      return RMW_RET_ERROR;
-    }
   }
 
   sess_.reset();

@@ -12,19 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef DETAIL__RMW_SUBSCRIPTION_DATA_HPP_
-#define DETAIL__RMW_SUBSCRIPTION_DATA_HPP_
+#ifndef DETAIL__RMW_PUBLISHER_DATA_HPP_
+#define DETAIL__RMW_PUBLISHER_DATA_HPP_
 
-#include <condition_variable>
+#include <array>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <unordered_map>
-#include <variant>
+#include <vector>
 
 #include <zenoh.hxx>
 
@@ -32,7 +32,6 @@
 #include "graph_cache.hpp"
 #include "liveliness_utils.hpp"
 #include "message_type_support.hpp"
-#include "attachment_helpers.hpp"
 #include "type_support_common.hpp"
 #include "zenoh_utils.hpp"
 
@@ -40,169 +39,149 @@
 
 #include "rmw/rmw.h"
 #include "rmw/ret_types.h"
+#include "rmw/topic_endpoint_info.h"
 
 namespace rmw_zenoh_cpp
 {
 ///=============================================================================
-class SubscriptionData final : public std::enable_shared_from_this<SubscriptionData>
+class PublisherData final
 {
 public:
-  struct Message
-  {
-    explicit Message(
-      const zenoh::Bytes & bytes,
-      uint64_t recv_ts,
-      AttachmentData && attachment,
-      rmw_endpoint_locality_t locality = RMW_ENDPOINT_LOCALITY_UNDEFINED);
-
-    ~Message() = default;
-
-    Payload payload;
-    uint64_t recv_timestamp;
-    AttachmentData attachment;
-    rmw_endpoint_locality_t locality;
-  };
-
-  // Make a shared_ptr of SubscriptionData.
-  static std::shared_ptr<SubscriptionData> make(
+  // Make a shared_ptr of PublisherData.
+  static std::shared_ptr<PublisherData> make(
     std::shared_ptr<zenoh::Session> session,
-    std::shared_ptr<GraphCache> graph_cache,
+    const rmw_publisher_t * const rmw_publisher,
     const rmw_node_t * const node,
     liveliness::NodeInfo node_info,
     std::size_t node_id,
-    std::size_t Subscription_id,
+    std::size_t publisher_id,
     const std::string & topic_name,
     const rosidl_message_type_support_t * type_support,
-    const rmw_qos_profile_t * qos_profile,
-    const rmw_subscription_options_t & sub_options);
+    const rmw_qos_profile_t * qos_profile);
 
-  // Get a copy of the gid_hash of this SubscriptionData's liveliness::Entity.
+  // Publish a ROS message.
+  rmw_ret_t publish(
+    const void *ros_message,
+    ShmContext *shm
+  );
+
+  // Publish a serialized ROS message.
+  rmw_ret_t publish_serialized_message(
+    const rmw_serialized_message_t *serialized_message,
+    ShmContext *shm
+  );
+
+  // Get a copy of the gid_hash of this PublisherData's liveliness::Entity.
   std::size_t gid_hash() const;
 
-  // Get a copy of the TopicInfo of this SubscriptionData.
+  // Get a copy of the TopicInfo of this PublisherData.
   liveliness::TopicInfo topic_info() const;
+
+  // Return a copy of the GID of this publisher.
+  std::array<uint8_t, RMW_GID_STORAGE_SIZE> copy_gid() const;
 
   // Returns true if liveliness token is still valid.
   bool liveliness_is_valid() const;
 
-  // Get the events manager of this SubscriptionData.
+  // Get the events manager of this PublisherData.
   std::shared_ptr<EventsManager> events_mgr() const;
 
-  // Shutdown this SubscriptionData.
+  // Shutdown this PublisherData.
   rmw_ret_t shutdown();
 
-  // Check if this SubscriptionData is shutdown.
+  // Check if this PublisherData is shutdown.
   bool is_shutdown() const;
 
-  // Add a new message to the queue.
-  void add_new_message(
-    std::unique_ptr<Message> msg,
-    const std::string & topic_name,
-    rmw_endpoint_locality_t locality = RMW_ENDPOINT_LOCALITY_UNDEFINED);
-
-  bool queue_has_data_and_attach_condition_if_not(rmw_wait_set_data_t * wait_set_data);
-
-  bool detach_condition_and_queue_is_empty();
-
-  rmw_ret_t take_one_message(
-    void * ros_message,
-    rmw_message_info_t * message_info,
-    bool * taken);
-
-  rmw_ret_t take_serialized_message(
-    rmw_serialized_message_t * serialized_message,
-    bool * taken,
-    rmw_message_info_t * message_info);
-
-  void set_on_new_message_callback(
-    rmw_event_callback_t callback,
-    const void * user_data);
-
-  std::shared_ptr<GraphCache> graph_cache() const;
-
   // Destructor.
-  ~SubscriptionData();
+  ~PublisherData();
 
 private:
-  // Structures for Buffer-aware subscribers
-  struct PublisherInfo {
+  // Structures for Buffer-aware publishers
+  struct EndpointInfoStorage
+  {
+    rmw_topic_endpoint_info_t info{};
+    std::string node_name;
+    std::string node_namespace;
+    std::string topic_type;
+  };
+
+  struct SubscriberInfo
+  {
     rmw_gid_t gid;
-    rmw_endpoint_locality_t locality;
-    std::vector<std::string> backend_types;
-    std::string assigned_subscription_key;
+    std::string endpoint_key;
+    EndpointInfoStorage endpoint_info;
+    std::unordered_map<std::string, std::string> backend_aux_info;
+    std::unordered_map<std::string, bool> backend_compat;
+    std::unordered_map<std::string, std::vector<std::set<uint32_t>>> backend_groups;
   };
 
-  struct SubscriptionEndpoint {
-    std::string key_suffix;
-    std::string full_key;
-    rmw_endpoint_locality_t locality;
-    std::vector<std::string> common_backends;
-    std::optional<zenoh::ext::AdvancedSubscriber<void>> sub;
+  struct PublisherEndpoint
+  {
+    std::string key;
+    std::optional<zenoh::ext::AdvancedPublisher> pub;
+    std::vector<rmw_gid_t> target_subscribers;
+    std::optional<std::vector<uint8_t>> cached_message;
   };
 
-  SubscriptionData(
+  // Constructor.
+  PublisherData(
+    const rmw_publisher_t * const rmw_publisher,
     const rmw_node_t * rmw_node,
-    std::shared_ptr<GraphCache> graph_cache,
     std::shared_ptr<liveliness::Entity> entity,
     std::shared_ptr<zenoh::Session> session,
+    zenoh::ext::AdvancedPublisher pub,
+    zenoh::LivelinessToken token,
     const void * type_support_impl,
     std::unique_ptr<MessageTypeSupport> type_support,
-    rmw_subscription_options_t sub_options,
     bool is_buffer_aware,
     std::vector<std::string> my_backend_types);
 
-  bool init();
+  // Discovery callback for Buffer-aware publishers
+  void on_subscriber_discovered(const liveliness::Entity & entity);
 
-  // Discovery callback for Buffer-aware subscribers
-  void on_publisher_discovered(const liveliness::Entity & entity);
+  // Get or create an endpoint for a specific full key
+  std::shared_ptr<PublisherEndpoint> get_or_create_endpoint(
+    const std::string & full_key);
 
-  // Create subscription for a specific key
-  void create_subscription_for_key(
-    const std::string & full_key,
-    rmw_endpoint_locality_t locality);
+  // Buffer-aware publish helper
+  rmw_ret_t publish_buffer_aware(
+    const void * ros_message,
+    ShmContext * shm);
 
   // Internal mutex.
   mutable std::mutex mutex_;
+  // The rmw publisher
+  const rmw_publisher_t * rmw_publisher_;
   // The parent node.
   const rmw_node_t * rmw_node_;
-  // The graph cache.
-  std::shared_ptr<GraphCache> graph_cache_;
-  // The Entity generated for the subscription.
+  // The Entity generated for the publisher.
   std::shared_ptr<liveliness::Entity> entity_;
-  // A shared session
+  // A shared session.
   std::shared_ptr<zenoh::Session> sess_;
-  // An owned advanced subscriber (for simple subscriptions, this is the only one).
-  std::optional<zenoh::ext::AdvancedSubscriber<void>> sub_;
-  // Liveliness token for the subscription.
+  // An owned AdvancedPublisher (for simple publishers, this is the only one).
+  zenoh::ext::AdvancedPublisher pub_;
+  // Liveliness token for the publisher.
   std::optional<zenoh::LivelinessToken> token_;
   // Type support fields
   const void * type_support_impl_;
   std::unique_ptr<MessageTypeSupport> type_support_;
-  // Subscription options.
-  rmw_subscription_options_t sub_options_;
-  std::deque<std::unique_ptr<Message>> message_queue_;
-  // Map GID of a subscription to the sequence number of the message it published.
-  std::unordered_map<size_t, int64_t> last_known_published_msg_;
-  // Wait set data.
-  rmw_wait_set_data_t * wait_set_data_;
-  // Callback managers.
-  DataCallbackManager data_callback_mgr_;
   std::shared_ptr<EventsManager> events_mgr_;
+  size_t sequence_number_;
   // Shutdown flag.
   bool is_shutdown_;
-  // Whether the object has ever successfully been initialized.
-  bool initialized_;
-  
-  // Buffer-aware subscription fields
+
+  // Buffer-aware publisher fields
   bool is_buffer_aware_;
   std::vector<std::string> my_backend_types_;
-  // For simple subscriptions: sub_endpoints_ contains only base subscription
-  // For buffer-aware: multiple subscriptions based on discovered publishers
-  std::unordered_map<std::string, std::shared_ptr<SubscriptionEndpoint>> sub_endpoints_;
-  std::vector<PublisherInfo> discovered_publishers_;
+  // For simple publishers: endpoints_ contains only base endpoint
+  // For buffer-aware: multiple endpoints based on discovered subscribers
+  std::unordered_map<std::string, std::shared_ptr<PublisherEndpoint>> endpoints_;
+  std::vector<SubscriberInfo> discovered_subscribers_;
+  EndpointInfoStorage local_endpoint_info_;
+  std::shared_ptr<GraphCache> graph_cache_;
 };
-using SubscriptionDataPtr = std::shared_ptr<SubscriptionData>;
-using SubscriptionDataConstPtr = std::shared_ptr<const SubscriptionData>;
+using PublisherDataPtr = std::shared_ptr<PublisherData>;
+using PublisherDataConstPtr = std::shared_ptr<const PublisherData>;
 }  // namespace rmw_zenoh_cpp
 
-#endif  // DETAIL__RMW_SUBSCRIPTION_DATA_HPP_
+#endif  // DETAIL__RMW_PUBLISHER_DATA_HPP_

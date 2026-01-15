@@ -36,8 +36,6 @@
 #include "rmw_node_data.hpp"
 #include "zenoh_config.hpp"
 
-#include "host_endpoint_manager/host_endpoint_manager.hpp"
-
 #include "rcpputils/scope_exit.hpp"
 #include "rmw/error_handling.h"
 #include "zenoh_utils.hpp"
@@ -228,16 +226,6 @@ public:
     graph_cache_ =
       std::make_shared<rmw_zenoh_cpp::GraphCache>(this->session_->get_zid());
 
-    // Initialize the Host Endpoint Manager.
-    try {
-      endpoint_manager_ = host_endpoint_manager::HostEndpointManager::get_instance(domain_id_);
-    } catch (const std::exception & e) {
-      RMW_ZENOH_LOG_ERROR_NAMED(
-        "rmw_zenoh_cpp",
-        "Failed to initialize Host Endpoint Manager: %s", e.what());
-      throw std::runtime_error("Failed to initialize Host Endpoint Manager.");
-    }
-
     // Setup liveliness subscriptions for discovery.
     // Query router/liveliness participants to get graph information before the session was started.
     // We create a blocking channel that is unbounded, ie. `bound` = 0, to receive
@@ -332,12 +320,6 @@ public:
         // Update the graph cache
         context_impl_data->update_graph_cache(sample, keyexpr_str);
 
-        // Refresh Host Endpoint Manager cache when remote endpoints appear
-        if (sample.get_kind() == zenoh::SampleKind::Z_SAMPLE_KIND_PUT) {
-          if (context_impl_data->endpoint_manager_ != nullptr) {
-            context_impl_data->endpoint_manager_->refresh_from_remote();
-          }
-        }
       },
       zenoh::closures::none,
       std::move(sub_options),
@@ -435,12 +417,6 @@ public:
   {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     return serialization_buffer_pool_;
-  }
-
-  std::shared_ptr<host_endpoint_manager::HostEndpointManager> endpoint_manager()
-  {
-    std::lock_guard<std::recursive_mutex> lock(mutex_);
-    return endpoint_manager_;
   }
 
   bool create_node_data(
@@ -550,8 +526,6 @@ private:
   std::shared_ptr<rmw_zenoh_cpp::GraphCache> graph_cache_;
   // Pool of serialization buffers.
   std::shared_ptr<rmw_zenoh_cpp::BufferPool> serialization_buffer_pool_;
-  // Host Endpoint Manager for tracking endpoint locality.
-  std::shared_ptr<host_endpoint_manager::HostEndpointManager> endpoint_manager_;
   // ROS graph liveliness subscriber.
   // The graph_subscriber *must* exist in order for anything in this Data class,
   // and hence rmw_zenoh_cpp, to work.
@@ -654,11 +628,6 @@ std::shared_ptr<rmw_zenoh_cpp::BufferPool> rmw_context_impl_s::serialization_buf
 }
 
 ///=============================================================================
-std::shared_ptr<host_endpoint_manager::HostEndpointManager> rmw_context_impl_s::endpoint_manager()
-{
-  return data_->endpoint_manager();
-}
-
 ///=============================================================================
 bool rmw_context_impl_s::create_node_data(
   const rmw_node_t * const node,

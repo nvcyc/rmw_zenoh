@@ -24,6 +24,11 @@
 namespace rmw_zenoh_cpp
 {
 
+namespace
+{
+thread_local const std::unordered_map<std::string, bool> * g_tls_backend_compat = nullptr;
+}  // namespace
+
 // Function pointer type for descriptor registration functions
 using RegisterDescriptorFunc = void (*)();
 
@@ -83,6 +88,16 @@ void initialize_buffer_backends()
       const std::shared_ptr<void> & descriptor) -> std::shared_ptr<void> {
         return backend_ptr->from_descriptor(descriptor);
       };
+    ops.create_descriptor_with_endpoint = [backend_ptr](
+      const std::shared_ptr<void> & impl,
+      const rmw_topic_endpoint_info_t & endpoint_info) -> std::shared_ptr<void> {
+        return backend_ptr->create_descriptor_with_endpoint(impl, endpoint_info);
+      };
+    ops.from_descriptor_with_endpoint = [backend_ptr](
+      const std::shared_ptr<void> & descriptor,
+      const rmw_topic_endpoint_info_t & endpoint_info) -> std::shared_ptr<void> {
+        return backend_ptr->from_descriptor_with_endpoint(descriptor, endpoint_info);
+      };
 
     backend_ops[backend_type] = ops;
     std::cerr << "[RMW Zenoh]   ✓ Registered backend ops for: " << backend_type << "\n";
@@ -104,6 +119,12 @@ void initialize_buffer_backends()
 
   std::cerr << "[RMW Zenoh] Buffer backend initialization complete\n";
   std::cerr << "[RMW Zenoh] Total backends registered: " << backend_ops.size() << "\n";
+
+  // Register endpoint compatibility resolver for endpoint-aware serialization.
+  rosidl_typesupport_fastrtps_cpp::get_endpoint_compatibility_resolver() =
+    [](const rmw_topic_endpoint_info_t &, const std::string & backend_type) {
+      return rmw_zenoh_cpp::get_thread_local_backend_compatibility(backend_type);
+    };
 }
 
 void shutdown_buffer_backends()
@@ -134,21 +155,42 @@ void shutdown_buffer_backends()
   }
 
   std::cerr << "[RMW Zenoh] Buffer backend shutdown complete\n";
+  rosidl_typesupport_fastrtps_cpp::get_endpoint_compatibility_resolver() = nullptr;
+}
+
+///=============================================================================
+void set_thread_local_backend_compatibility(
+  const std::unordered_map<std::string, bool> * compat_map)
+{
+  g_tls_backend_compat = compat_map;
+}
+
+///=============================================================================
+bool get_thread_local_backend_compatibility(const std::string & backend_type)
+{
+  if (!g_tls_backend_compat) {
+    return true;
+  }
+  auto it = g_tls_backend_compat->find(backend_type);
+  if (it == g_tls_backend_compat->end()) {
+    return true;
+  }
+  return it->second;
 }
 
 ///=============================================================================
 std::vector<std::string> get_installed_backend_types()
 {
   std::vector<std::string> backend_types;
-  
+
   // Always include CPU backend
   backend_types.push_back("cpu");
-  
+
   // Get additional backends from the registry
   try {
     auto & registry = rosidl_buffer_registry::BufferBackendRegistry::get_instance();
     auto backend_names = registry.get_backend_names();
-    
+
     for (const auto & backend_name : backend_names) {
       auto backend = registry.get_backend(backend_name);
       if (backend) {
@@ -162,7 +204,7 @@ std::vector<std::string> get_installed_backend_types()
   } catch (const std::exception & e) {
     std::cerr << "[RMW Zenoh] Warning getting backend types: " << e.what() << "\n";
   }
-  
+
   return backend_types;
 }
 
@@ -188,7 +230,7 @@ std::vector<std::string> get_common_backends(
   const std::vector<std::string> & b)
 {
   std::vector<std::string> common;
-  
+
   for (const auto & backend_a : a) {
     for (const auto & backend_b : b) {
       if (backend_a == backend_b) {
@@ -206,62 +248,65 @@ std::vector<std::string> get_common_backends(
       }
     }
   }
-  
+
   return common;
 }
 
 ///=============================================================================
-std::string compute_endpoint_key_suffix(
-  rmw_endpoint_locality_t locality,
-  const std::vector<std::string> & pub_backends,
-  const std::vector<std::string> & sub_backends)
+std::unordered_map<std::string, std::string> collect_backend_aux_info(
+  const rmw_topic_endpoint_info_t & endpoint_info,
+  const std::vector<std::string> & backend_types)
 {
-  // Get common backends
-  auto common = get_common_backends(pub_backends, sub_backends);
-  
-  if (common.empty()) {
-    // No compatible backends - shouldn't happen if backends_compatible() was checked
-    return "cpu";  // Fallback to CPU
-  }
-  
-  // Select best backend based on priority (CUDA > other accelerators > CPU)
-  std::string selected_backend = "cpu";
-  for (const auto & backend : common) {
-    if (backend == "cuda") {
-      selected_backend = "cuda";
-      break;  // CUDA is highest priority
-    } else if (backend != "cpu") {
-      selected_backend = backend;  // Prefer any accelerator over CPU
+  std::unordered_map<std::string, std::string> aux_info;
+  aux_info.reserve(backend_types.size());
+
+  auto & registry = rosidl_buffer_registry::BufferBackendRegistry::get_instance();
+  for (const auto & backend_type : backend_types) {
+    if (backend_type == "cpu") {
+      aux_info[backend_type] = "";
+      continue;
     }
+    auto backend = registry.get_backend(backend_type);
+    if (!backend) {
+      aux_info[backend_type] = "";
+      continue;
+    }
+    aux_info[backend_type] = backend->on_creating_endpoint(endpoint_info);
   }
-  
-  // Generate suffix based on locality and selected backend
-  std::string suffix;
-  
-  switch (locality) {
-    case RMW_ENDPOINT_LOCALITY_INTRA_PROCESS:
-      // Intra-process not yet implemented
-      suffix = "intra_process_" + selected_backend;
-      break;
-      
-    case RMW_ENDPOINT_LOCALITY_INTER_PROCESS_SAME_HOST:
-      // Same machine, different process - use IPC
-      suffix = "ipc_" + selected_backend;
-      break;
-      
-    case RMW_ENDPOINT_LOCALITY_INTER_HOST:
-      // Different machines - use network transfer
-      suffix = "inter_process_" + selected_backend;
-      break;
-      
-    case RMW_ENDPOINT_LOCALITY_UNDEFINED:
-    default:
-      // Unknown locality - use conservative approach
-      suffix = selected_backend;
-      break;
+
+  return aux_info;
+}
+
+///=============================================================================
+std::unordered_map<std::string, bool> evaluate_backend_compatibility(
+  const rmw_topic_endpoint_info_t & endpoint_info,
+  const std::vector<rmw_topic_endpoint_info_t> & existing_endpoints,
+  std::unordered_map<std::string, std::vector<std::set<uint32_t>>> & backend_groups)
+{
+  std::unordered_map<std::string, bool> compat;
+  auto backend_types = get_installed_backend_types();
+  compat.reserve(backend_types.size());
+
+  auto & registry = rosidl_buffer_registry::BufferBackendRegistry::get_instance();
+  for (const auto & backend_type : backend_types) {
+    if (backend_type == "cpu") {
+      compat[backend_type] = true;
+      backend_groups[backend_type] = {};
+      continue;
+    }
+    auto backend = registry.get_backend(backend_type);
+    if (!backend) {
+      compat[backend_type] = false;
+      backend_groups[backend_type] = {};
+      continue;
+    }
+
+    auto result = backend->on_discovering_endpoint(endpoint_info, existing_endpoints);
+    compat[backend_type] = result.first;
+    backend_groups[backend_type] = std::move(result.second);
   }
-  
-  return suffix;
+
+  return compat;
 }
 
 }  // namespace rmw_zenoh_cpp

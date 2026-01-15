@@ -25,6 +25,7 @@
 using host_endpoint_manager::HostEndpointManager;
 using host_endpoint_manager::EntityType;
 using host_endpoint_manager::LocalityInfo;
+using host_endpoint_manager::EndpointLocality;
 
 class TestHostEndpointManager : public ::testing::Test
 {
@@ -99,7 +100,7 @@ TEST_F(TestHostEndpointManager, RegisterPublisher)
   // Query should find it as intra-process
   auto info = mgr->query_endpoint_locality(gid);
   EXPECT_TRUE(info.found);
-  EXPECT_EQ(info.locality, RMW_ENDPOINT_LOCALITY_INTRA_PROCESS);
+  EXPECT_EQ(info.locality, EndpointLocality::INTRA_PROCESS);
   EXPECT_EQ(info.entity_type, EntityType::PUBLISHER);
   EXPECT_EQ(info.remote_instance_id, mgr->get_instance_id());
 }
@@ -115,7 +116,7 @@ TEST_F(TestHostEndpointManager, RegisterSubscription)
 
   auto info = mgr->query_endpoint_locality(gid);
   EXPECT_TRUE(info.found);
-  EXPECT_EQ(info.locality, RMW_ENDPOINT_LOCALITY_INTRA_PROCESS);
+  EXPECT_EQ(info.locality, EndpointLocality::INTRA_PROCESS);
   EXPECT_EQ(info.entity_type, EntityType::SUBSCRIPTION);
 }
 
@@ -130,7 +131,7 @@ TEST_F(TestHostEndpointManager, RegisterServiceClient)
 
   auto info = mgr->query_endpoint_locality(gid);
   EXPECT_TRUE(info.found);
-  EXPECT_EQ(info.locality, RMW_ENDPOINT_LOCALITY_INTRA_PROCESS);
+  EXPECT_EQ(info.locality, EndpointLocality::INTRA_PROCESS);
   EXPECT_EQ(info.entity_type, EntityType::SERVICE_CLIENT);
 }
 
@@ -145,7 +146,7 @@ TEST_F(TestHostEndpointManager, RegisterServiceServer)
 
   auto info = mgr->query_endpoint_locality(gid);
   EXPECT_TRUE(info.found);
-  EXPECT_EQ(info.locality, RMW_ENDPOINT_LOCALITY_INTRA_PROCESS);
+  EXPECT_EQ(info.locality, EndpointLocality::INTRA_PROCESS);
   EXPECT_EQ(info.entity_type, EntityType::SERVICE_SERVER);
 }
 
@@ -180,7 +181,7 @@ TEST_F(TestHostEndpointManager, QueryNonExistentEndpoint)
 
   auto info = mgr->query_endpoint_locality(gid);
   EXPECT_FALSE(info.found);
-  EXPECT_EQ(info.locality, RMW_ENDPOINT_LOCALITY_UNDEFINED);
+  EXPECT_EQ(info.locality, EndpointLocality::UNDEFINED);
 }
 
 //==============================================================================
@@ -225,7 +226,7 @@ TEST_F(TestHostEndpointManager, RefreshFromRemote)
   // Should still be found
   auto info = mgr->query_endpoint_locality(gid);
   EXPECT_TRUE(info.found);
-  EXPECT_EQ(info.locality, RMW_ENDPOINT_LOCALITY_INTRA_PROCESS);
+  EXPECT_EQ(info.locality, EndpointLocality::INTRA_PROCESS);
 }
 
 //==============================================================================
@@ -354,11 +355,11 @@ TEST_F(TestHostEndpointManager, MultiContextIntraProcess)
   // Both should detect each other as intra-process
   auto pub_info = mgr1->query_endpoint_locality(sub_gid);
   EXPECT_TRUE(pub_info.found);
-  EXPECT_EQ(pub_info.locality, RMW_ENDPOINT_LOCALITY_INTRA_PROCESS);
+  EXPECT_EQ(pub_info.locality, EndpointLocality::INTRA_PROCESS);
 
   auto sub_info = mgr2->query_endpoint_locality(pub_gid);
   EXPECT_TRUE(sub_info.found);
-  EXPECT_EQ(sub_info.locality, RMW_ENDPOINT_LOCALITY_INTRA_PROCESS);
+  EXPECT_EQ(sub_info.locality, EndpointLocality::INTRA_PROCESS);
 
   managers_.push_back(mgr1);
 }
@@ -369,4 +370,3 @@ int main(int argc, char ** argv)
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }
-

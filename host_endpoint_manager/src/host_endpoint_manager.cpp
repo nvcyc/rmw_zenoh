@@ -316,7 +316,7 @@ bool HostEndpointManager::register_endpoint(
   {
     std::lock_guard<std::mutex> lock(cache_mutex_);
     local_cache_[gid_hash] = {
-      RMW_ENDPOINT_LOCALITY_INTRA_PROCESS,
+      EndpointLocality::INTRA_PROCESS,
       instance_id_,
       type
     };
@@ -375,7 +375,7 @@ LocalityInfo HostEndpointManager::query_endpoint_locality(const rmw_gid_t & gid)
   if (it == local_cache_.end()) {
     // NOT FOUND = not on this host (or not yet discovered)
     return {
-      RMW_ENDPOINT_LOCALITY_UNDEFINED,
+      EndpointLocality::UNDEFINED,
       EntityType::PUBLISHER,  // placeholder
       0,
       false  // found = false
@@ -412,10 +412,10 @@ void HostEndpointManager::refresh_from_remote()
     size_t gid_hash = hash_gid_raw(entry.gid);
 
     // Determine locality based on instance ID
-    rmw_endpoint_locality_t locality =
+    EndpointLocality locality =
       (entry.instance_id == instance_id_) ?
-      RMW_ENDPOINT_LOCALITY_INTRA_PROCESS :
-      RMW_ENDPOINT_LOCALITY_INTER_PROCESS_SAME_HOST;
+      EndpointLocality::INTRA_PROCESS :
+      EndpointLocality::INTER_PROCESS_SAME_HOST;
 
     updates[gid_hash] = {
       locality,

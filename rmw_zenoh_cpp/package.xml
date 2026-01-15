@@ -19,7 +19,6 @@
 
   <depend>ament_index_cpp</depend>
   <depend>fastcdr</depend>
-  <depend>host_endpoint_manager</depend>
   <depend>rcpputils</depend>
   <depend>rcutils</depend>
   <depend>rosidl_buffer_registry</depend>

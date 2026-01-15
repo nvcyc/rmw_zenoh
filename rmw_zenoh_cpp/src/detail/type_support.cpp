@@ -143,11 +143,11 @@ bool TypeSupport::deserialize_ros_message(
 }
 
 ///=============================================================================
-bool TypeSupport::serialize_ros_message_with_locality(
+bool TypeSupport::serialize_ros_message_with_endpoint(
   const void * ros_message,
   eprosima::fastcdr::Cdr & ser,
   const void * impl,
-  rmw_endpoint_locality_t locality) const
+  const rmw_topic_endpoint_info_t & endpoint_info) const
 {
   assert(ros_message);
   assert(impl);
@@ -159,9 +159,9 @@ bool TypeSupport::serialize_ros_message_with_locality(
   if (has_data_) {
     auto callbacks = static_cast<const message_type_support_callbacks_t *>(impl);
 
-    // Use locality-aware serialization if available (for messages with Buffer fields)
-    if (callbacks->cdr_serialize_with_locality) {
-      return callbacks->cdr_serialize_with_locality(ros_message, ser, locality);
+    // Use endpoint-aware serialization if available (for messages with Buffer fields)
+    if (callbacks->cdr_serialize_with_endpoint) {
+      return callbacks->cdr_serialize_with_endpoint(ros_message, ser, endpoint_info);
     } else {
       // Fall back to regular serialization for messages without Buffer fields
       return callbacks->cdr_serialize(ros_message, ser);
@@ -174,17 +174,17 @@ bool TypeSupport::serialize_ros_message_with_locality(
 }
 
 ///=============================================================================
-bool TypeSupport::deserialize_ros_message_with_locality(
+bool TypeSupport::deserialize_ros_message_with_endpoint(
   eprosima::fastcdr::Cdr & deser,
   void * ros_message,
   const void * impl,
-  rmw_endpoint_locality_t locality) const
+  const rmw_topic_endpoint_info_t & endpoint_info) const
 {
   assert(ros_message);
   assert(impl);
 
   try {
-    std::cerr << "[TypeSupport] deserialize_ros_message_with_locality: reading encapsulation...\n";
+    std::cerr << "[TypeSupport] deserialize_ros_message_with_endpoint: reading encapsulation...\n";
     // Deserialize encapsulation.
     deser.read_encapsulation();
     std::cerr << "[TypeSupport] Encapsulation read successfully\n";
@@ -193,10 +193,11 @@ bool TypeSupport::deserialize_ros_message_with_locality(
     if (has_data_) {
       auto callbacks = static_cast<const message_type_support_callbacks_t *>(impl);
 
-      // Use locality-aware deserialization if available (for messages with Buffer fields)
-      if (callbacks->cdr_deserialize_with_locality) {
-        std::cerr << "[TypeSupport] Calling cdr_deserialize_with_locality for " << get_name() << "\n";
-        return callbacks->cdr_deserialize_with_locality(deser, ros_message, locality);
+      // Use endpoint-aware deserialization if available (for messages with Buffer fields)
+      if (callbacks->cdr_deserialize_with_endpoint) {
+        std::cerr << "[TypeSupport] Calling cdr_deserialize_with_endpoint for " << get_name() <<
+          "\n";
+        return callbacks->cdr_deserialize_with_endpoint(deser, ros_message, endpoint_info);
       } else {
         // Fall back to regular deserialization for messages without Buffer fields
         return callbacks->cdr_deserialize(deser, ros_message);

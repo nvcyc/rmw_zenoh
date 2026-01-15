@@ -23,6 +23,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <zenoh.hxx>
@@ -56,7 +57,8 @@ struct TopicInfo
   std::string type_hash_;
   std::string topic_keyexpr_;
   rmw_qos_profile_t qos_;
-  std::optional<std::vector<std::string>> backend_types_;  // Present only for Buffer message types
+  // Backend aux info for Buffer message types (backend -> aux string)
+  std::optional<std::unordered_map<std::string, std::string>> backend_aux_info_;
 
   TopicInfo(
     std::size_t domain_id,
@@ -64,7 +66,7 @@ struct TopicInfo
     std::string type,
     std::string type_hash,
     rmw_qos_profile_t qos,
-    std::optional<std::vector<std::string>> backend_types = std::nullopt);
+    std::optional<std::unordered_map<std::string, std::string>> backend_aux_info = std::nullopt);
 };
 
 ///=============================================================================

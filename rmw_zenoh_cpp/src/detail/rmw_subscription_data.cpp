@@ -18,9 +18,12 @@
 
 #include <algorithm>
 #include <cinttypes>
+#include <cstring>
+#include <iomanip>
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <variant>
@@ -35,15 +38,27 @@
 #include "qos.hpp"
 #include "liveliness_utils.hpp"
 
-#include "host_endpoint_manager/host_endpoint_manager.hpp"
-
 #include "rcpputils/scope_exit.hpp"
 
 #include "rmw/error_handling.h"
 #include "rmw/get_topic_endpoint_info.h"
 #include "rmw/impl/cpp/macros.hpp"
+#include "rosidl_runtime_c/type_hash.h"
 
 #include "rosidl_typesupport_fastrtps_cpp/message_type_support.h"
+
+namespace
+{
+std::string gid_to_hex(const rmw_gid_t & gid)
+{
+  std::ostringstream out;
+  out << std::hex << std::setfill('0');
+  for (size_t i = 0; i < RMW_GID_STORAGE_SIZE; ++i) {
+    out << std::setw(2) << static_cast<int>(gid.data[i]);
+  }
+  return out.str();
+}
+}  // namespace
 
 namespace rmw_zenoh_cpp
 {
@@ -52,8 +67,9 @@ SubscriptionData::Message::Message(
   const zenoh::Bytes & p,
   uint64_t recv_ts,
   AttachmentData && attachment_,
-  rmw_endpoint_locality_t locality_)
-: payload(p), recv_timestamp(recv_ts), attachment(std::move(attachment_)), locality(locality_)
+  const rmw_topic_endpoint_info_t * endpoint_info_)
+: payload(p), recv_timestamp(recv_ts), attachment(std::move(attachment_)),
+  endpoint_info(endpoint_info_)
 {
 }
 
@@ -92,11 +108,25 @@ std::shared_ptr<SubscriptionData> SubscriptionData::make(
             << ", is_buffer_aware: " << is_buffer_aware << "\n";
 
   // Query installed backends if message type has Buffer fields
-  std::optional<std::vector<std::string>> backend_types = std::nullopt;
+  std::optional<std::unordered_map<std::string, std::string>> backend_types = std::nullopt;
   std::vector<std::string> my_backend_types;
   if (is_buffer_aware) {
     my_backend_types = rmw_zenoh_cpp::get_installed_backend_types();
-    backend_types = my_backend_types;
+
+    EndpointInfoStorage local_endpoint_info;
+    local_endpoint_info.node_name = node_info.name_;
+    local_endpoint_info.node_namespace = node_info.ns_;
+    local_endpoint_info.topic_type = message_type_support->get_name();
+    local_endpoint_info.info.node_name = local_endpoint_info.node_name.c_str();
+    local_endpoint_info.info.node_namespace = local_endpoint_info.node_namespace.c_str();
+    local_endpoint_info.info.topic_type = local_endpoint_info.topic_type.c_str();
+    local_endpoint_info.info.topic_type_hash = *type_hash;
+    local_endpoint_info.info.endpoint_type = RMW_ENDPOINT_SUBSCRIPTION;
+    std::memset(local_endpoint_info.info.endpoint_gid, 0, RMW_GID_STORAGE_SIZE);
+    local_endpoint_info.info.qos_profile = adapted_qos_profile;
+
+    backend_types = rmw_zenoh_cpp::collect_backend_aux_info(
+      local_endpoint_info.info, my_backend_types);
     RMW_ZENOH_LOG_DEBUG_NAMED(
       "rmw_zenoh_cpp",
       "Creating Buffer-aware subscription for topic %s with %zu backends",
@@ -156,6 +186,36 @@ std::shared_ptr<SubscriptionData> SubscriptionData::make(
       my_backend_types
     });
 
+  if (is_buffer_aware) {
+    auto build_endpoint_info_from_entity =
+      [](const liveliness::Entity & entity, rmw_endpoint_type_t endpoint_type)
+      -> EndpointInfoStorage
+      {
+        EndpointInfoStorage storage;
+        storage.node_name = entity.node_name();
+        storage.node_namespace = entity.node_namespace();
+        auto topic_info = entity.topic_info();
+        if (topic_info.has_value()) {
+          storage.topic_type = topic_info->type_;
+          storage.info.qos_profile = topic_info->qos_;
+          storage.info.topic_type_hash = rosidl_get_zero_initialized_type_hash();
+          (void)rosidl_parse_type_hash_string(
+            topic_info->type_hash_.c_str(),
+            &storage.info.topic_type_hash);
+        }
+        storage.info.node_name = storage.node_name.c_str();
+        storage.info.node_namespace = storage.node_namespace.c_str();
+        storage.info.topic_type = storage.topic_type.c_str();
+        storage.info.endpoint_type = endpoint_type;
+        auto gid_array = entity.copy_gid();
+        std::memcpy(storage.info.endpoint_gid, gid_array.data(), RMW_GID_STORAGE_SIZE);
+        return storage;
+      };
+
+    sub_data->local_endpoint_info_ =
+      build_endpoint_info_from_entity(*sub_data->entity_, RMW_ENDPOINT_SUBSCRIPTION);
+  }
+
   if (!sub_data->init()) {
     // init() already set the error
     return nullptr;
@@ -179,21 +239,6 @@ std::shared_ptr<SubscriptionData> SubscriptionData::make(
     RMW_ZENOH_LOG_INFO_NAMED(
       "rmw_zenoh_cpp",
       "[Subscription] Manually added local subscriber to graph cache for discovery");
-  }
-
-  // Register with Host Endpoint Manager
-  auto context_impl = static_cast<rmw_context_impl_t *>(node->context->impl);
-  auto endpoint_manager = context_impl->endpoint_manager();
-  if (endpoint_manager != nullptr) {
-    rmw_gid_t gid = rmw_zenoh_cpp::entity_gid_to_rmw_gid(
-      *sub_data->entity_, rmw_zenoh_cpp::rmw_zenoh_identifier);
-
-    if (!endpoint_manager->register_subscription(gid, topic_name.c_str())) {
-      RMW_ZENOH_LOG_ERROR_NAMED(
-        "rmw_zenoh_cpp",
-        "Failed to register subscription with Host Endpoint Manager");
-      return nullptr;
-    }
   }
 
   return sub_data;
@@ -413,14 +458,18 @@ void SubscriptionData::on_publisher_discovered(const liveliness::Entity & entity
 
   // Parse publisher backend list from liveliness key
   const auto & topic_info = entity.topic_info();
-  if (!topic_info.has_value() || !topic_info->backend_types_.has_value()) {
+  if (!topic_info.has_value() || !topic_info->backend_aux_info_.has_value()) {
     RMW_ZENOH_LOG_WARN_NAMED(
       "rmw_zenoh_cpp",
       "Discovered publisher without backend info on Buffer topic");
     return;
   }
 
-  const std::vector<std::string> & pub_backends = topic_info->backend_types_.value();
+  std::vector<std::string> pub_backends;
+  pub_backends.reserve(topic_info->backend_aux_info_->size());
+  for (const auto & pair : topic_info->backend_aux_info_.value()) {
+    pub_backends.push_back(pair.first);
+  }
 
   // Check backend compatibility
   if (!rmw_zenoh_cpp::backends_compatible(my_backend_types_, pub_backends)) {
@@ -430,42 +479,84 @@ void SubscriptionData::on_publisher_discovered(const liveliness::Entity & entity
     return;
   }
 
-  // Query locality from Host Endpoint Manager
-  auto context_impl = static_cast<rmw_context_impl_t *>(rmw_node_->context->impl);
-  auto endpoint_manager = context_impl->endpoint_manager();
-
   rmw_gid_t pub_gid = rmw_zenoh_cpp::entity_gid_to_rmw_gid(entity,
       rmw_zenoh_cpp::rmw_zenoh_identifier);
-  rmw_endpoint_locality_t locality = RMW_ENDPOINT_LOCALITY_UNDEFINED;
 
-  if (endpoint_manager != nullptr) {
-    auto locality_info = endpoint_manager->query_endpoint_locality(pub_gid);
-    if (locality_info.found) {
-      locality = locality_info.locality;
+  for (const auto & existing : discovered_publishers_) {
+    if (memcmp(existing.gid.data, pub_gid.data, RMW_GID_STORAGE_SIZE) == 0) {
+      return;
     }
   }
 
-  // Compute key suffix based on locality and common backends
-  std::string key_suffix = rmw_zenoh_cpp::compute_endpoint_key_suffix(
-    locality, pub_backends, my_backend_types_);
+  auto build_endpoint_info_from_entity =
+    [](const liveliness::Entity & entity, rmw_endpoint_type_t endpoint_type)
+    -> EndpointInfoStorage
+    {
+      EndpointInfoStorage storage;
+      storage.node_name = entity.node_name();
+      storage.node_namespace = entity.node_namespace();
+      auto topic_info = entity.topic_info();
+      if (topic_info.has_value()) {
+        storage.topic_type = topic_info->type_;
+        storage.info.qos_profile = topic_info->qos_;
+        storage.info.topic_type_hash = rosidl_get_zero_initialized_type_hash();
+        (void)rosidl_parse_type_hash_string(
+          topic_info->type_hash_.c_str(),
+          &storage.info.topic_type_hash);
+      }
+      storage.info.node_name = storage.node_name.c_str();
+      storage.info.node_namespace = storage.node_namespace.c_str();
+      storage.info.topic_type = storage.topic_type.c_str();
+      storage.info.endpoint_type = endpoint_type;
+      auto gid_array = entity.copy_gid();
+      std::memcpy(storage.info.endpoint_gid, gid_array.data(), RMW_GID_STORAGE_SIZE);
+      return storage;
+    };
 
-  std::string suffixed_key = entity_->topic_info()->topic_keyexpr_ + "/" + key_suffix;
+  auto pub_endpoint_info = build_endpoint_info_from_entity(entity, RMW_ENDPOINT_PUBLISHER);
+
+  std::vector<rmw_topic_endpoint_info_t> existing_endpoints;
+  existing_endpoints.reserve(1 + discovered_publishers_.size());
+  existing_endpoints.push_back(local_endpoint_info_.info);
+  for (const auto & existing : discovered_publishers_) {
+    existing_endpoints.push_back(existing.endpoint_info.info);
+  }
+
+  std::unordered_map<std::string, std::vector<std::set<uint32_t>>> backend_groups;
+  auto backend_compat = rmw_zenoh_cpp::evaluate_backend_compatibility(
+    pub_endpoint_info.info, existing_endpoints, backend_groups);
+
+  rmw_gid_t local_gid = {};
+  auto local_gid_array = entity_->copy_gid();
+  std::memcpy(local_gid.data, local_gid_array.data(), RMW_GID_STORAGE_SIZE);
+
+  std::string full_key = entity_->topic_info()->topic_keyexpr_ + "/" +
+    entity.zid() + "/" + gid_to_hex(local_gid);
 
   RMW_ZENOH_LOG_INFO_NAMED(
     "rmw_zenoh_cpp",
-    "[Subscription] Discovered publisher! locality=%d, key_suffix='%s', suffixed_key='%s'",
-    locality, key_suffix.c_str(), suffixed_key.c_str());
+    "[Subscription] Discovered publisher! key='%s'", full_key.c_str());
 
-  // Create subscription for this suffixed key if not already exists
-  if (sub_endpoints_.find(suffixed_key) == sub_endpoints_.end()) {
-    create_subscription_for_key(suffixed_key, locality);
+  // Create subscription for this key if not already exists
+  if (sub_endpoints_.find(full_key) == sub_endpoints_.end()) {
+    create_subscription_for_key(full_key, pub_endpoint_info);
   }
+
+  // Track publisher
+  PublisherInfo pub_info;
+  pub_info.gid = pub_gid;
+  pub_info.endpoint_key = full_key;
+  pub_info.endpoint_info = std::move(pub_endpoint_info);
+  pub_info.backend_aux_info = topic_info->backend_aux_info_.value();
+  pub_info.backend_compat = std::move(backend_compat);
+  pub_info.backend_groups = std::move(backend_groups);
+  discovered_publishers_.push_back(std::move(pub_info));
 }
 
 ///=============================================================================
 void SubscriptionData::create_subscription_for_key(
   const std::string & key,
-  rmw_endpoint_locality_t locality)
+  const EndpointInfoStorage & publisher_info)
 {
   zenoh::ZResult result;
   zenoh::KeyExpr sub_ke(key, true, &result);
@@ -498,8 +589,13 @@ void SubscriptionData::create_subscription_for_key(
     }
   }
 
+  auto endpoint = std::make_shared<SubscriptionEndpoint>();
+  endpoint->key = key;
+  endpoint->publisher_info = publisher_info;
+  const rmw_topic_endpoint_info_t * endpoint_info_ptr = &endpoint->publisher_info.info;
+
   std::weak_ptr<SubscriptionData> data_wp = shared_from_this();
-  auto on_sample = [data_wp, locality](const zenoh::Sample & sample) {
+  auto on_sample = [data_wp, endpoint_info_ptr](const zenoh::Sample & sample) {
       auto sub_data = data_wp.lock();
       if (sub_data == nullptr) {
         return;
@@ -516,14 +612,13 @@ void SubscriptionData::create_subscription_for_key(
 
       AttachmentData attachment_data(attachment.value());
 
-      // Store locality with message for deserialization
       sub_data->add_new_message(
         std::make_unique<SubscriptionData::Message>(
           sample.get_payload(),
           get_system_time_in_ns(),
-          std::move(attachment_data)),
-        std::string(sample.get_keyexpr().as_string_view()),
-        locality);
+          std::move(attachment_data),
+          endpoint_info_ptr),
+        std::string(sample.get_keyexpr().as_string_view()));
     };
 
   auto sub = context_impl->session()->ext().declare_advanced_subscriber(
@@ -540,15 +635,13 @@ void SubscriptionData::create_subscription_for_key(
     return;
   }
 
-  auto endpoint = std::make_shared<SubscriptionEndpoint>();
   endpoint->sub = std::optional<zenoh::ext::AdvancedSubscriber<void>>(std::move(sub));
-  endpoint->locality = locality;
   sub_endpoints_[key] = endpoint;
 
   RMW_ZENOH_LOG_INFO_NAMED(
     "rmw_zenoh_cpp",
-    "[Subscription] Created buffer-aware subscription for key: '%s' with locality: %d",
-    key.c_str(), locality);
+    "[Subscription] Created buffer-aware subscription for key: '%s'",
+    key.c_str());
 }
 
 ///=============================================================================
@@ -602,21 +695,6 @@ rmw_ret_t SubscriptionData::shutdown()
         "Unable to undeclare the subscriber for topic '%s'",
         entity_->topic_info().value().name_.c_str());
       return RMW_RET_ERROR;
-    }
-  }
-
-  // Unregister from Host Endpoint Manager
-  auto context_impl = static_cast<rmw_context_impl_t *>(rmw_node_->context->impl);
-  auto endpoint_manager = context_impl->endpoint_manager();
-  if (endpoint_manager != nullptr) {
-    rmw_gid_t gid = rmw_zenoh_cpp::entity_gid_to_rmw_gid(
-      *entity_, rmw_zenoh_cpp::rmw_zenoh_identifier);
-
-    if (!endpoint_manager->unregister_endpoint(gid)) {
-      RMW_ZENOH_LOG_ERROR_NAMED(
-        "rmw_zenoh_cpp",
-        "Failed to unregister subscription from Host Endpoint Manager");
-      ret = RMW_RET_ERROR;
     }
   }
 
@@ -701,13 +779,13 @@ rmw_ret_t SubscriptionData::take_one_message(
     });
 
   // Copy payload data to the larger buffer
-  std::cerr << "[take_one_message] About to copy " << payload_data.size() << 
+  std::cerr << "[take_one_message] About to copy " << payload_data.size() <<
     " bytes to buffer (allocated: " << buffer_size << " bytes)\n";
   std::memcpy(buffer_data, payload_data.data(), payload_data.size());
   std::cerr << "[take_one_message] Memory copy complete\n";
 
   // FastCDR needs to know the actual data size, not the buffer size
-  std::cerr << "[take_one_message] Creating FastBuffer with payload_size=" << 
+  std::cerr << "[take_one_message] Creating FastBuffer with payload_size=" <<
     payload_data.size() << "\n";
   eprosima::fastcdr::FastBuffer fastbuffer(
     reinterpret_cast<char *>(buffer_data),
@@ -725,28 +803,32 @@ rmw_ret_t SubscriptionData::take_one_message(
     "rmw_zenoh_cpp",
     "[Subscription] FastBuffer created, starting deserialization...");
 
-  // Use locality-aware deserialization for Buffer-aware subscriptions
+  // Use endpoint-aware deserialization for Buffer-aware subscriptions
   bool deserialize_success = false;
 
   try {
     if (is_buffer_aware_) {
       RMW_ZENOH_LOG_INFO_NAMED(
         "rmw_zenoh_cpp",
-        "[Subscription] Using locality-aware deserialization, locality=%d", msg_data->locality);
+        "[Subscription] Using endpoint-aware deserialization");
 
-      std::cerr << "[take_one_message] Calling deserialize_ros_message_with_locality, locality=" <<
-        msg_data->locality << "\n";
-      std::cerr << "[take_one_message] CDR state before deserialize - buffer_size=" << 
+      std::cerr << "[take_one_message] Calling deserialize_ros_message_with_endpoint\n";
+      std::cerr << "[take_one_message] CDR state before deserialize - buffer_size=" <<
         buffer_size << ", payload_size=" << payload_data.size() << "\n";
-      
-      // Use type_support_->deserialize_ros_message_with_locality() which handles encapsulation reading
-      deserialize_success = type_support_->deserialize_ros_message_with_locality(
+
+      const rmw_topic_endpoint_info_t empty_endpoint_info =
+        rmw_get_zero_initialized_topic_endpoint_info();
+      const rmw_topic_endpoint_info_t * endpoint_info =
+        msg_data->endpoint_info != nullptr ? msg_data->endpoint_info : &empty_endpoint_info;
+
+      // Use type_support_->deserialize_ros_message_with_endpoint() which handles encapsulation reading
+      deserialize_success = type_support_->deserialize_ros_message_with_endpoint(
         deser.get_cdr(),
         ros_message,
         type_support_impl_,
-        msg_data->locality);
-      
-      std::cerr << "[take_one_message] deserialize_ros_message_with_locality returned: " <<
+        *endpoint_info);
+
+      std::cerr << "[take_one_message] deserialize_ros_message_with_endpoint returned: " <<
         deserialize_success << "\n";
     } else {
       // Simple path: standard deserialization
@@ -850,8 +932,7 @@ rmw_ret_t SubscriptionData::take_serialized_message(
 ///=============================================================================
 void SubscriptionData::add_new_message(
   std::unique_ptr<SubscriptionData::Message> msg,
-  const std::string & topic_name,
-  rmw_endpoint_locality_t locality)
+  const std::string & topic_name)
 {
   std::lock_guard<std::mutex> lock(mutex_);
   if (is_shutdown_) {

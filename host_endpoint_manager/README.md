@@ -125,11 +125,11 @@ if (!info.found) {
   // Endpoint not on this host → use network transport
   serialize_and_send_over_network(msg);
 }
-else if (info.locality == RMW_ENDPOINT_LOCALITY_INTRA_PROCESS) {
+else if (info.locality == EndpointLocality::INTRA_PROCESS) {
   // Same process → zero-copy optimization
   use_zero_copy_transfer(msg);
 }
-else if (info.locality == RMW_ENDPOINT_LOCALITY_INTER_PROCESS_SAME_HOST) {
+else if (info.locality == EndpointLocality::INTER_PROCESS_SAME_HOST) {
   // Same host, different process → shared memory optimization
   use_shm_transport(msg);
 }
@@ -239,7 +239,7 @@ ros2 run <package> <node> --ros-args --log-level host_endpoint_manager:=debug
 
 ## Dependencies
 
-- **rmw**: For `rmw_gid_t`, `rmw_endpoint_locality_t` types
+- **rmw**: For `rmw_gid_t` types
 - **rcutils**: For logging macros
 - **POSIX**: For `shm_open`, `mmap`, `sem_open` (librt)
 - **C++17**: For standard library features

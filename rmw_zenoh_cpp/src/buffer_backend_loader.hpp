@@ -15,10 +15,12 @@
 #ifndef RMW_ZENOH_CPP__BUFFER_BACKEND_LOADER_HPP_
 #define RMW_ZENOH_CPP__BUFFER_BACKEND_LOADER_HPP_
 
+#include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
-#include "rmw/types.h"
+#include "rmw/topic_endpoint_info.h"
 
 namespace rmw_zenoh_cpp
 {
@@ -51,15 +53,23 @@ std::vector<std::string> get_common_backends(
   const std::vector<std::string> & a,
   const std::vector<std::string> & b);
 
-/// Compute the Zenoh key suffix based on locality and backend compatibility
-/// @param locality The locality of the remote endpoint
-/// @param pub_backends Publisher's supported backends
-/// @param sub_backends Subscriber's supported backends
-/// @return Key suffix string (e.g., "cpu", "ipc_cuda", "inter_process_cuda")
-std::string compute_endpoint_key_suffix(
-  rmw_endpoint_locality_t locality,
-  const std::vector<std::string> & pub_backends,
-  const std::vector<std::string> & sub_backends);
+/// Collect backend aux info from loaded backends for a local endpoint.
+std::unordered_map<std::string, std::string> collect_backend_aux_info(
+  const rmw_topic_endpoint_info_t & endpoint_info,
+  const std::vector<std::string> & backend_types);
+
+/// Evaluate backend compatibility for a discovered endpoint.
+std::unordered_map<std::string, bool> evaluate_backend_compatibility(
+  const rmw_topic_endpoint_info_t & endpoint_info,
+  const std::vector<rmw_topic_endpoint_info_t> & existing_endpoints,
+  std::unordered_map<std::string, std::vector<std::set<uint32_t>>> & backend_groups);
+
+/// Set thread-local backend compatibility map for serialization.
+void set_thread_local_backend_compatibility(
+  const std::unordered_map<std::string, bool> * compat_map);
+
+/// Query thread-local backend compatibility for a backend type.
+bool get_thread_local_backend_compatibility(const std::string & backend_type);
 
 }  // namespace rmw_zenoh_cpp
 

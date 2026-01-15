@@ -21,6 +21,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -38,6 +39,7 @@
 
 #include "rmw/rmw.h"
 #include "rmw/ret_types.h"
+#include "rmw/topic_endpoint_info.h"
 
 namespace rmw_zenoh_cpp
 {
@@ -95,16 +97,27 @@ public:
 
 private:
   // Structures for Buffer-aware publishers
-  struct SubscriberInfo {
-    rmw_gid_t gid;
-    rmw_endpoint_locality_t locality;
-    std::vector<std::string> backend_types;
-    std::string assigned_endpoint_key;
+  struct EndpointInfoStorage
+  {
+    rmw_topic_endpoint_info_t info{};
+    std::string node_name;
+    std::string node_namespace;
+    std::string topic_type;
   };
 
-  struct PublisherEndpoint {
-    std::string key_suffix;
-    std::string full_key;
+  struct SubscriberInfo
+  {
+    rmw_gid_t gid;
+    std::string endpoint_key;
+    EndpointInfoStorage endpoint_info;
+    std::unordered_map<std::string, std::string> backend_aux_info;
+    std::unordered_map<std::string, bool> backend_compat;
+    std::unordered_map<std::string, std::vector<std::set<uint32_t>>> backend_groups;
+  };
+
+  struct PublisherEndpoint
+  {
+    std::string key;
     std::optional<zenoh::ext::AdvancedPublisher> pub;
     std::vector<rmw_gid_t> target_subscribers;
     std::optional<std::vector<uint8_t>> cached_message;
@@ -126,11 +139,10 @@ private:
   // Discovery callback for Buffer-aware publishers
   void on_subscriber_discovered(const liveliness::Entity & entity);
 
-  // Get or create an endpoint for a specific key suffix
+  // Get or create an endpoint for a specific full key
   std::shared_ptr<PublisherEndpoint> get_or_create_endpoint(
-    const std::string & key_suffix,
     const std::string & full_key);
-  
+
   // Buffer-aware publish helper
   rmw_ret_t publish_buffer_aware(
     const void * ros_message,
@@ -157,7 +169,7 @@ private:
   size_t sequence_number_;
   // Shutdown flag.
   bool is_shutdown_;
-  
+
   // Buffer-aware publisher fields
   bool is_buffer_aware_;
   std::vector<std::string> my_backend_types_;
@@ -165,6 +177,7 @@ private:
   // For buffer-aware: multiple endpoints based on discovered subscribers
   std::unordered_map<std::string, std::shared_ptr<PublisherEndpoint>> endpoints_;
   std::vector<SubscriberInfo> discovered_subscribers_;
+  EndpointInfoStorage local_endpoint_info_;
   std::shared_ptr<GraphCache> graph_cache_;
 };
 using PublisherDataPtr = std::shared_ptr<PublisherData>;
