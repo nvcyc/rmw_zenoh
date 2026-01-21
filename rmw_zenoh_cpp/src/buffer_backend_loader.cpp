@@ -80,14 +80,6 @@ void initialize_buffer_backends()
     ops.descriptor_type_name = backend->get_descriptor_type_name();
 
     auto backend_ptr = backend;  // Capture for lambdas
-    ops.create_descriptor = [backend_ptr](
-      const std::shared_ptr<void> & impl) -> std::shared_ptr<void> {
-        return backend_ptr->create_descriptor(impl);
-      };
-    ops.from_descriptor = [backend_ptr](
-      const std::shared_ptr<void> & descriptor) -> std::shared_ptr<void> {
-        return backend_ptr->from_descriptor(descriptor);
-      };
     ops.create_descriptor_with_endpoint = [backend_ptr](
       const std::shared_ptr<void> & impl,
       const rmw_topic_endpoint_info_t & endpoint_info) -> std::shared_ptr<void> {
