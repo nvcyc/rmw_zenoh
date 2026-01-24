@@ -894,7 +894,8 @@ void PublisherData::on_subscriber_discovered(const liveliness::Entity & entity)
 
   std::unordered_map<std::string, std::vector<std::set<uint32_t>>> backend_groups;
   auto backend_compat = rmw_zenoh_cpp::evaluate_backend_compatibility(
-    sub_endpoint_info.info, existing_endpoints, backend_groups);
+    sub_endpoint_info.info, existing_endpoints, backend_groups,
+    topic_info_opt->backend_aux_info_.value());
 
   std::string full_key = entity_->topic_info()->topic_keyexpr_ + "/" +
     entity_->zid() + "/" + gid_to_hex(gid);

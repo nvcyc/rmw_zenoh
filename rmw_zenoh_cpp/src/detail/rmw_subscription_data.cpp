@@ -568,7 +568,8 @@ void SubscriptionData::on_publisher_discovered(const liveliness::Entity & entity
 
   std::unordered_map<std::string, std::vector<std::set<uint32_t>>> backend_groups;
   auto backend_compat = rmw_zenoh_cpp::evaluate_backend_compatibility(
-    pub_endpoint_info.info, existing_endpoints, backend_groups);
+    pub_endpoint_info.info, existing_endpoints, backend_groups,
+    topic_info->backend_aux_info_.value());
 
   rmw_gid_t local_gid = rmw_zenoh_cpp::entity_gid_to_rmw_gid(
     *entity_, rmw_zenoh_cpp::rmw_zenoh_identifier);

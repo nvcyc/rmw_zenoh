@@ -59,10 +59,15 @@ std::unordered_map<std::string, std::string> collect_backend_aux_info(
   const std::vector<std::string> & backend_types);
 
 /// Evaluate backend compatibility for a discovered endpoint.
+/// @param endpoint_info Information about the discovered endpoint
+/// @param existing_endpoints List of existing endpoints for grouping decisions
+/// @param backend_groups Output parameter for backend-specific grouping information
+/// @param discovered_backend_aux_info Backend aux info from the discovered endpoint
 std::unordered_map<std::string, bool> evaluate_backend_compatibility(
   const rmw_topic_endpoint_info_t & endpoint_info,
   const std::vector<rmw_topic_endpoint_info_t> & existing_endpoints,
-  std::unordered_map<std::string, std::vector<std::set<uint32_t>>> & backend_groups);
+  std::unordered_map<std::string, std::vector<std::set<uint32_t>>> & backend_groups,
+  const std::unordered_map<std::string, std::string> & discovered_backend_aux_info);
 
 /// Set thread-local backend compatibility map for serialization.
 void set_thread_local_backend_compatibility(

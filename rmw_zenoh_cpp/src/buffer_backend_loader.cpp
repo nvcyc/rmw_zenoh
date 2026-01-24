@@ -273,11 +273,19 @@ std::unordered_map<std::string, std::string> collect_backend_aux_info(
 std::unordered_map<std::string, bool> evaluate_backend_compatibility(
   const rmw_topic_endpoint_info_t & endpoint_info,
   const std::vector<rmw_topic_endpoint_info_t> & existing_endpoints,
-  std::unordered_map<std::string, std::vector<std::set<uint32_t>>> & backend_groups)
+  std::unordered_map<std::string, std::vector<std::set<uint32_t>>> & backend_groups,
+  const std::unordered_map<std::string, std::string> & discovered_backend_aux_info)
 {
   std::unordered_map<std::string, bool> compat;
   auto backend_types = get_installed_backend_types();
   compat.reserve(backend_types.size());
+
+  // Extract backend types from discovered endpoint
+  std::vector<std::string> discovered_backend_types;
+  discovered_backend_types.reserve(discovered_backend_aux_info.size());
+  for (const auto & pair : discovered_backend_aux_info) {
+    discovered_backend_types.push_back(pair.first);
+  }
 
   auto & registry = rosidl_buffer_registry::BufferBackendRegistry::get_instance();
   for (const auto & backend_type : backend_types) {
@@ -293,7 +301,9 @@ std::unordered_map<std::string, bool> evaluate_backend_compatibility(
       continue;
     }
 
-    auto result = backend->on_discovering_endpoint(endpoint_info, existing_endpoints);
+    auto result = backend->on_discovering_endpoint(
+      endpoint_info, existing_endpoints,
+      discovered_backend_types, discovered_backend_aux_info);
     compat[backend_type] = result.first;
     backend_groups[backend_type] = std::move(result.second);
   }
