@@ -145,21 +145,8 @@ std::shared_ptr<SubscriptionData> SubscriptionData::make(
   std::vector<std::string> my_backend_types;
   if (is_buffer_aware) {
     my_backend_types = rmw_zenoh_cpp::get_installed_backend_types();
-
-    EndpointInfoStorage local_endpoint_info;
-    local_endpoint_info.node_name = node_info.name_;
-    local_endpoint_info.node_namespace = node_info.ns_;
-    local_endpoint_info.topic_type = message_type_support->get_name();
-    local_endpoint_info.info.node_name = local_endpoint_info.node_name.c_str();
-    local_endpoint_info.info.node_namespace = local_endpoint_info.node_namespace.c_str();
-    local_endpoint_info.info.topic_type = local_endpoint_info.topic_type.c_str();
-    local_endpoint_info.info.topic_type_hash = *type_hash;
-    local_endpoint_info.info.endpoint_type = RMW_ENDPOINT_SUBSCRIPTION;
-    std::memset(local_endpoint_info.info.endpoint_gid, 0, RMW_GID_STORAGE_SIZE);
-    local_endpoint_info.info.qos_profile = adapted_qos_profile;
-
-    backend_types = rmw_zenoh_cpp::collect_backend_aux_info(
-      local_endpoint_info.info, my_backend_types);
+    backend_types = rmw_zenoh_cpp::collect_backend_aux_info();
+    std::cerr << "[SubscriptionData::make] Found " << my_backend_types.size() << " backends\n";
     RMW_ZENOH_LOG_DEBUG_NAMED(
       "rmw_zenoh_cpp",
       "Creating Buffer-aware subscription for topic %s with %zu backends",
@@ -247,6 +234,8 @@ std::shared_ptr<SubscriptionData> SubscriptionData::make(
 
     sub_data->local_endpoint_info_ =
       build_endpoint_info_from_entity(*sub_data->entity_, RMW_ENDPOINT_SUBSCRIPTION);
+
+    rmw_zenoh_cpp::inform_backends_on_creating_endpoint(sub_data->local_endpoint_info_.info);
   }
 
   if (!sub_data->init()) {
@@ -566,9 +555,15 @@ void SubscriptionData::on_publisher_discovered(const liveliness::Entity & entity
     existing_endpoints.push_back(existing.endpoint_info.info);
   }
 
+  std::unordered_map<std::string, std::vector<std::set<uint32_t>>> backend_endpoint_groups;
+  for (const auto & existing : discovered_publishers_) {
+    backend_endpoint_groups.insert(existing.backend_groups.begin(),
+      existing.backend_groups.end());
+  }
+
   std::unordered_map<std::string, std::vector<std::set<uint32_t>>> backend_groups;
-  auto backend_compat = rmw_zenoh_cpp::evaluate_backend_compatibility(
-    pub_endpoint_info.info, existing_endpoints, backend_groups,
+  auto backend_compat = rmw_zenoh_cpp::inform_backends_on_discovering_endpoint(
+    pub_endpoint_info.info, existing_endpoints, backend_endpoint_groups,
     topic_info->backend_aux_info_.value());
 
   rmw_gid_t local_gid = rmw_zenoh_cpp::entity_gid_to_rmw_gid(

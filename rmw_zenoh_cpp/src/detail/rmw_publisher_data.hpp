@@ -134,7 +134,7 @@ private:
     const void * type_support_impl,
     std::unique_ptr<MessageTypeSupport> type_support,
     bool is_buffer_aware,
-    std::vector<std::string> my_backend_types);
+    std::unordered_map<std::string, std::string> backend_aux_info);
 
   // Discovery callback for Buffer-aware publishers
   void on_subscriber_discovered(const liveliness::Entity & entity);
@@ -172,7 +172,7 @@ private:
 
   // Buffer-aware publisher fields
   bool is_buffer_aware_;
-  std::vector<std::string> my_backend_types_;
+  std::unordered_map<std::string, std::string> backend_aux_info_;
   // For simple publishers: endpoints_ contains only base endpoint
   // For buffer-aware: multiple endpoints based on discovered subscribers
   std::unordered_map<std::string, std::shared_ptr<PublisherEndpoint>> endpoints_;

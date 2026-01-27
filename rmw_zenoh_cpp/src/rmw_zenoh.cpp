@@ -64,12 +64,14 @@ namespace
 const rosidl_message_type_support_t * find_message_type_support(
   const rosidl_message_type_support_t * type_supports)
 {
+  // Try C++ type support first (required for Buffer field support)
   const rosidl_message_type_support_t * type_support = get_message_typesupport_handle(
-    type_supports, RMW_ZENOH_CPP_TYPESUPPORT_C);
+    type_supports, RMW_ZENOH_CPP_TYPESUPPORT_CPP);
   if (!type_support) {
     rcutils_error_string_t prev_error_string = rcutils_get_error_string();
     rcutils_reset_error();
-    type_support = get_message_typesupport_handle(type_supports, RMW_ZENOH_CPP_TYPESUPPORT_CPP);
+    // Fall back to C type support
+    type_support = get_message_typesupport_handle(type_supports, RMW_ZENOH_CPP_TYPESUPPORT_C);
     if (!type_support) {
       rcutils_error_string_t error_string = rcutils_get_error_string();
       rcutils_reset_error();

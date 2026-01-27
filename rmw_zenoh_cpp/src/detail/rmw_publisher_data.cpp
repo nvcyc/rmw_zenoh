@@ -131,25 +131,11 @@ std::shared_ptr<PublisherData> PublisherData::make(
             << ", is_buffer_aware: " << is_buffer_aware << "\n";
 
   // Query installed backends if message type has Buffer fields
-  std::optional<std::unordered_map<std::string, std::string>> backend_types = std::nullopt;
+  std::unordered_map<std::string, std::string> backend_aux_info;
   std::vector<std::string> my_backend_types;
   if (is_buffer_aware) {
     my_backend_types = rmw_zenoh_cpp::get_installed_backend_types();
-
-    EndpointInfoStorage local_endpoint_info;
-    local_endpoint_info.node_name = node_info.name_;
-    local_endpoint_info.node_namespace = node_info.ns_;
-    local_endpoint_info.topic_type = message_type_support->get_name();
-    local_endpoint_info.info.node_name = local_endpoint_info.node_name.c_str();
-    local_endpoint_info.info.node_namespace = local_endpoint_info.node_namespace.c_str();
-    local_endpoint_info.info.topic_type = local_endpoint_info.topic_type.c_str();
-    local_endpoint_info.info.topic_type_hash = *type_hash;
-    local_endpoint_info.info.endpoint_type = RMW_ENDPOINT_PUBLISHER;
-    std::memset(local_endpoint_info.info.endpoint_gid, 0, RMW_GID_STORAGE_SIZE);
-    local_endpoint_info.info.qos_profile = adapted_qos_profile;
-
-    backend_types = rmw_zenoh_cpp::collect_backend_aux_info(
-      local_endpoint_info.info, my_backend_types);
+    backend_aux_info = rmw_zenoh_cpp::collect_backend_aux_info();
     std::cerr << "[PublisherData::make] Found " << my_backend_types.size() << " backends\n";
     RMW_ZENOH_LOG_DEBUG_NAMED(
       "rmw_zenoh_cpp",
@@ -186,7 +172,7 @@ std::shared_ptr<PublisherData> PublisherData::make(
       message_type_support->get_name(),
       type_hash_c_str,
       adapted_qos_profile,
-      backend_types}  // Include backends only if Buffer message type
+      backend_aux_info}  // Include backends only if Buffer message type
   );
   if (entity == nullptr) {
     RMW_ZENOH_LOG_ERROR_NAMED(
@@ -266,7 +252,7 @@ std::shared_ptr<PublisherData> PublisherData::make(
       type_support->data,
       std::move(message_type_support),
       is_buffer_aware,
-      my_backend_types
+      backend_aux_info
     });
 
   if (is_buffer_aware) {
@@ -298,6 +284,9 @@ std::shared_ptr<PublisherData> PublisherData::make(
 
     pub_data->local_endpoint_info_ =
       build_endpoint_info_from_entity(*pub_data->entity_, RMW_ENDPOINT_PUBLISHER);
+
+    // Inform backends AFTER the GID is properly set
+    rmw_zenoh_cpp::inform_backends_on_creating_endpoint(pub_data->local_endpoint_info_.info);
   }
 
   rmw_context_impl_t * context_impl = static_cast<rmw_context_impl_t *>(node->context->impl);
@@ -336,7 +325,7 @@ PublisherData::PublisherData(
   const void * type_support_impl,
   std::unique_ptr<MessageTypeSupport> type_support,
   bool is_buffer_aware,
-  std::vector<std::string> my_backend_types)
+  std::unordered_map<std::string, std::string> backend_aux_info)
 : rmw_publisher_(rmw_publisher),
   rmw_node_(rmw_node),
   entity_(std::move(entity)),
@@ -348,7 +337,7 @@ PublisherData::PublisherData(
   sequence_number_(1),
   is_shutdown_(false),
   is_buffer_aware_(is_buffer_aware),
-  my_backend_types_(std::move(my_backend_types))
+  backend_aux_info_(std::move(backend_aux_info))
 {
   events_mgr_ = std::make_shared<EventsManager>();
 
@@ -816,11 +805,6 @@ void PublisherData::on_subscriber_discovered(const liveliness::Entity & entity)
     return;
   }
 
-  std::vector<std::string> sub_backends;
-  sub_backends.reserve(topic_info_opt->backend_aux_info_->size());
-  for (const auto & pair : topic_info_opt->backend_aux_info_.value()) {
-    sub_backends.push_back(pair.first);
-  }
   auto gid = entity_gid_to_rmw_gid(entity, rmw_zenoh_identifier);
   const auto entity_gid_array = entity.copy_gid();
   RMW_ZENOH_LOG_INFO_NAMED(
@@ -842,14 +826,6 @@ void PublisherData::on_subscriber_discovered(const liveliness::Entity & entity)
     "rmw_zenoh_cpp",
     "[Publisher] Discovered subscriber entity_gid='%s'",
     gid_array_to_hex(entity_gid_array).c_str());
-
-  // Check backend compatibility
-  if (!rmw_zenoh_cpp::backends_compatible(my_backend_types_, sub_backends)) {
-    RMW_ZENOH_LOG_WARN_NAMED(
-      "rmw_zenoh_cpp",
-      "Incompatible backends between publisher and subscriber");
-    return;
-  }
 
   // Avoid duplicate registrations
   for (const auto & existing : discovered_subscribers_) {
@@ -892,9 +868,15 @@ void PublisherData::on_subscriber_discovered(const liveliness::Entity & entity)
     existing_endpoints.push_back(existing.endpoint_info.info);
   }
 
+  std::unordered_map<std::string, std::vector<std::set<uint32_t>>> backend_endpoint_groups;
+  for (const auto & existing : discovered_subscribers_) {
+    backend_endpoint_groups.insert(existing.backend_groups.begin(),
+      existing.backend_groups.end());
+  }
+
   std::unordered_map<std::string, std::vector<std::set<uint32_t>>> backend_groups;
-  auto backend_compat = rmw_zenoh_cpp::evaluate_backend_compatibility(
-    sub_endpoint_info.info, existing_endpoints, backend_groups,
+  auto backend_compat = rmw_zenoh_cpp::inform_backends_on_discovering_endpoint(
+    sub_endpoint_info.info, existing_endpoints, backend_endpoint_groups,
     topic_info_opt->backend_aux_info_.value());
 
   std::string full_key = entity_->topic_info()->topic_keyexpr_ + "/" +

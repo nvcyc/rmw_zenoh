@@ -245,70 +245,58 @@ std::vector<std::string> get_common_backends(
 }
 
 ///=============================================================================
-std::unordered_map<std::string, std::string> collect_backend_aux_info(
-  const rmw_topic_endpoint_info_t & endpoint_info,
-  const std::vector<std::string> & backend_types)
+std::unordered_map<std::string, std::string> collect_backend_aux_info()
 {
   std::unordered_map<std::string, std::string> aux_info;
-  aux_info.reserve(backend_types.size());
 
   auto & registry = rosidl_buffer_registry::BufferBackendRegistry::get_instance();
-  for (const auto & backend_type : backend_types) {
-    if (backend_type == "cpu") {
-      aux_info[backend_type] = "";
-      continue;
-    }
-    auto backend = registry.get_backend(backend_type);
+  for (const auto & backend_name : registry.get_backend_names()) {
+    auto backend = registry.get_backend(backend_name);
     if (!backend) {
-      aux_info[backend_type] = "";
       continue;
     }
-    aux_info[backend_type] = backend->on_creating_endpoint(endpoint_info);
+    aux_info[backend_name] = backend->get_backend_aux_info();
   }
 
   return aux_info;
 }
 
 ///=============================================================================
-std::unordered_map<std::string, bool> evaluate_backend_compatibility(
+void inform_backends_on_creating_endpoint(
+  const rmw_topic_endpoint_info_t & endpoint_info)
+{
+  auto & registry = rosidl_buffer_registry::BufferBackendRegistry::get_instance();
+  for (const auto & backend_name : registry.get_backend_names()) {
+    auto backend = registry.get_backend(backend_name);
+    if (!backend) {
+      continue;
+    }
+    backend->on_creating_endpoint(endpoint_info);
+  }
+}
+
+///=============================================================================
+std::unordered_map<std::string, bool> inform_backends_on_discovering_endpoint(
   const rmw_topic_endpoint_info_t & endpoint_info,
   const std::vector<rmw_topic_endpoint_info_t> & existing_endpoints,
-  std::unordered_map<std::string, std::vector<std::set<uint32_t>>> & backend_groups,
-  const std::unordered_map<std::string, std::string> & discovered_backend_aux_info)
+  std::unordered_map<std::string, std::vector<std::set<uint32_t>>> & backend_endpoint_groups,
+  const std::unordered_map<std::string, std::string> & endpoint_supported_backends)
 {
-  std::unordered_map<std::string, bool> compat;
-  auto backend_types = get_installed_backend_types();
-  compat.reserve(backend_types.size());
-
-  // Extract backend types from discovered endpoint
-  std::vector<std::string> discovered_backend_types;
-  discovered_backend_types.reserve(discovered_backend_aux_info.size());
-  for (const auto & pair : discovered_backend_aux_info) {
-    discovered_backend_types.push_back(pair.first);
-  }
-
+  std::unordered_map<std::string, bool> backend_compatibility;
   auto & registry = rosidl_buffer_registry::BufferBackendRegistry::get_instance();
-  for (const auto & backend_type : backend_types) {
-    if (backend_type == "cpu") {
-      compat[backend_type] = true;
-      backend_groups[backend_type] = {};
-      continue;
-    }
-    auto backend = registry.get_backend(backend_type);
+  for (const auto & backend_name : registry.get_backend_names()) {
+    auto backend = registry.get_backend(backend_name);
     if (!backend) {
-      compat[backend_type] = false;
-      backend_groups[backend_type] = {};
+      backend_compatibility[backend_name] = false;
+      backend_endpoint_groups[backend_name] = {};
       continue;
     }
-
     auto result = backend->on_discovering_endpoint(
-      endpoint_info, existing_endpoints,
-      discovered_backend_types, discovered_backend_aux_info);
-    compat[backend_type] = result.first;
-    backend_groups[backend_type] = std::move(result.second);
+      endpoint_info, existing_endpoints, endpoint_supported_backends);
+    backend_compatibility[backend_name] = result.first;
+    backend_endpoint_groups[backend_name] = std::move(result.second);
   }
-
-  return compat;
+  return backend_compatibility;
 }
 
 }  // namespace rmw_zenoh_cpp
