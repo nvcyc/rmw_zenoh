@@ -28,6 +28,7 @@
 
 #include <zenoh.hxx>
 
+#include "buffer_backend_loader.hpp"
 #include "graph_cache.hpp"
 #include "guard_condition.hpp"
 #include "identifier.hpp"
@@ -329,13 +330,17 @@ public:
   // Shutdown the Zenoh session.
   rmw_ret_t shutdown()
   {
+    std::cerr << "[RMW Context] shutdown() ENTERED\n" << std::flush;
     {
       std::lock_guard<std::recursive_mutex> lock(mutex_);
+      std::cerr << "[RMW Context] shutdown() acquired mutex\n" << std::flush;
       rmw_ret_t ret = RMW_RET_OK;
       if (is_shutdown_) {
+        std::cerr << "[RMW Context] shutdown() already shutdown, returning\n" << std::flush;
         return ret;
       }
 
+      std::cerr << "[RMW Context] shutdown() undeclaring graph_subscriber_\n" << std::flush;
       zenoh::ZResult result;
       std::move(graph_subscriber_).value().undeclare(&result);
       if (result != Z_OK) {
@@ -344,16 +349,26 @@ public:
           "Unable to undeclare the liveliness token");
         return RMW_RET_ERROR;
       }
+      std::cerr << "[RMW Context] shutdown() graph_subscriber_ undeclared\n" << std::flush;
 
       is_shutdown_ = true;
 
       // We specifically do *not* hold the mutex_ while tearing down the session; this allows us
       // to avoid an AB/BA deadlock if shutdown is racing with graph_sub_data_handler().
+      std::cerr << "[RMW Context] shutdown() releasing mutex\n" << std::flush;
     }
 
     // Drop the shared session.
+    std::cerr << "[RMW Context] shutdown() resetting session_\n" << std::flush;
     session_.reset();
+    std::cerr << "[RMW Context] shutdown() session_ reset complete\n" << std::flush;
 
+    // Cleanup buffer backend system before plugins are unloaded
+    std::cerr << "[RMW Context] shutdown() shutting down buffer backends\n" << std::flush;
+    rmw_zenoh_cpp::shutdown_buffer_backends();
+    std::cerr << "[RMW Context] shutdown() buffer backends shutdown complete\n" << std::flush;
+
+    std::cerr << "[RMW Context] shutdown() EXITING\n" << std::flush;
     return RMW_RET_OK;
   }
 
