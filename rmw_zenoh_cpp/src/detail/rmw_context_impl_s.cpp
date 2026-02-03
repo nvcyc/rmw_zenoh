@@ -28,6 +28,7 @@
 
 #include <zenoh.hxx>
 
+#include "buffer_backend_loader.hpp"
 #include "graph_cache.hpp"
 #include "guard_condition.hpp"
 #include "identifier.hpp"
@@ -346,13 +347,13 @@ public:
       }
 
       is_shutdown_ = true;
-
-      // We specifically do *not* hold the mutex_ while tearing down the session; this allows us
-      // to avoid an AB/BA deadlock if shutdown is racing with graph_sub_data_handler().
     }
 
     // Drop the shared session.
     session_.reset();
+
+    // Cleanup buffer backend system before plugins are unloaded
+    rmw_zenoh_cpp::shutdown_buffer_backends();
 
     return RMW_RET_OK;
   }
