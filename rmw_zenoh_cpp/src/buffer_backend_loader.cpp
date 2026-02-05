@@ -249,7 +249,6 @@ std::unordered_map<std::string, std::string> collect_backend_aux_info()
 {
   std::unordered_map<std::string, std::string> aux_info;
 
-  // Note: Empty backend list is allowed and treated as CPU-only
   auto & registry = rosidl_buffer_registry::BufferBackendRegistry::get_instance();
   for (const auto & backend_name : registry.get_backend_names()) {
     auto backend = registry.get_backend(backend_name);
