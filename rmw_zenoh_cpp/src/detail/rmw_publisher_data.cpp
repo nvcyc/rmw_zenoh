@@ -970,9 +970,7 @@ std::shared_ptr<PublisherData::PublisherEndpoint> PublisherData::get_or_create_e
 ///=============================================================================
 PublisherData::~PublisherData()
 {
-  std::cerr << "[PublisherData] DESTRUCTOR ENTERED\n" << std::flush;
   const rmw_ret_t ret = this->shutdown();
-  std::cerr << "[PublisherData] shutdown() returned with code: " << ret << "\n" << std::flush;
   if (ret != RMW_RET_OK) {
     RMW_ZENOH_LOG_ERROR_NAMED(
       "rmw_zenoh_cpp",
@@ -980,44 +978,22 @@ PublisherData::~PublisherData()
       entity_->topic_info().value().name_.c_str()
     );
   }
-  std::cerr << "[PublisherData] DESTRUCTOR EXITING\n" << std::flush;
 }
 
 ///=============================================================================
 rmw_ret_t PublisherData::shutdown()
 {
-  std::cerr << "[PublisherData::shutdown] ENTERED\n" << std::flush;
   std::lock_guard<std::mutex> lock(mutex_);
-  std::cerr << "[PublisherData::shutdown] Acquired mutex\n" << std::flush;
   if (is_shutdown_) {
-    std::cerr << "[PublisherData::shutdown] Already shutdown\n" << std::flush;
     return RMW_RET_OK;
-  }
-
-  // Unregister discovery callbacks for buffer-aware publishers
-  // NOTE: We skip this entirely to avoid deadlock with the graph subscriber callback thread
-  // The callbacks will be cleared automatically when the RMW context is destroyed
-  if (is_buffer_aware_ && graph_cache_ != nullptr) {
-    std::cerr <<
-      "[PublisherData::shutdown] Skipping discovery callback unregistration to avoid deadlock\n" <<
-      std::flush;
-    // graph_cache_->unregister_discovery_callbacks(gid_hash()); // DISABLED: causes deadlock
   }
 
   // Undeclare all dynamic endpoints for buffer-aware publishers
   if (is_buffer_aware_) {
-    std::cerr << "[PublisherData::shutdown] Undeclaring " << endpoints_.size() <<
-      " dynamic endpoints\n" << std::flush;
     zenoh::ZResult result;
-    size_t endpoint_idx = 0;
     for (auto & [key, endpoint] : endpoints_) {
-      std::cerr << "[PublisherData::shutdown] Processing endpoint " << (++endpoint_idx) << "/" <<
-        endpoints_.size() << " key=" << key << "\n" << std::flush;
       if (endpoint->pub.has_value()) {
-        std::cerr << "[PublisherData::shutdown] Undeclaring publisher for endpoint\n" << std::flush;
         std::move(endpoint->pub.value()).undeclare(&result);
-        std::cerr << "[PublisherData::shutdown] Publisher undeclared with result: " << result <<
-          "\n" << std::flush;
         if (result != Z_OK) {
           RMW_ZENOH_LOG_WARN_NAMED(
             "rmw_zenoh_cpp",
@@ -1025,17 +1001,12 @@ rmw_ret_t PublisherData::shutdown()
         }
       }
     }
-    std::cerr << "[PublisherData::shutdown] Clearing endpoints map\n" << std::flush;
     endpoints_.clear();
-    std::cerr << "[PublisherData::shutdown] Endpoints cleared\n" << std::flush;
   }
 
   // Unregister this publisher from the ROS graph.
-  std::cerr << "[PublisherData::shutdown] Undeclaring liveliness token\n" << std::flush;
   zenoh::ZResult result;
   std::move(token_).value().undeclare(&result);
-  std::cerr << "[PublisherData::shutdown] Liveliness token undeclared with result: " << result <<
-    "\n" << std::flush;
   if (result != Z_OK) {
     RMW_ZENOH_LOG_ERROR_NAMED(
       "rmw_zenoh_cpp",
@@ -1046,23 +1017,18 @@ rmw_ret_t PublisherData::shutdown()
 
   // For simple publishers, undeclare the base publisher
   if (!is_buffer_aware_) {
-    std::cerr << "[PublisherData::shutdown] Undeclaring base publisher (simple)\n" << std::flush;
     std::move(pub_).undeclare(&result);
-    std::cerr << "[PublisherData::shutdown] Base publisher undeclared\n" << std::flush;
-  }
-  if (result != Z_OK) {
-    RMW_ZENOH_LOG_ERROR_NAMED(
-      "rmw_zenoh_cpp",
-      "Unable to undeclare the publisher for topic '%s'",
-      entity_->topic_info().value().name_.c_str());
-    return RMW_RET_ERROR;
+    if (result != Z_OK) {
+      RMW_ZENOH_LOG_ERROR_NAMED(
+        "rmw_zenoh_cpp",
+        "Unable to undeclare the publisher for topic '%s'",
+        entity_->topic_info().value().name_.c_str());
+      return RMW_RET_ERROR;
+    }
   }
 
-  std::cerr << "[PublisherData::shutdown] Resetting session\n" << std::flush;
   sess_.reset();
-  std::cerr << "[PublisherData::shutdown] Session reset complete\n" << std::flush;
   is_shutdown_ = true;
-  std::cerr << "[PublisherData::shutdown] EXITING successfully\n" << std::flush;
   return RMW_RET_OK;
 }
 

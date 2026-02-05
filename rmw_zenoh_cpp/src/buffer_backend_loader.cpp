@@ -18,6 +18,7 @@
 #include <memory>
 #include <string>
 
+#include "detail/logging_macros.hpp"
 #include "rosidl_buffer_registry/buffer_backend_registry.hpp"
 #include "rosidl_typesupport_fastrtps_cpp/buffer_serialization.hpp"
 
@@ -39,41 +40,30 @@ void initialize_buffer_backends()
   // Note: CPU backend doesn't need registration - it's handled directly
   // in buffer_serialization.hpp by serializing as std::vector<T>
 
-  // Load all available buffer backends via pluginlib into the generic registry
+  // Load all available buffer backends via pluginlib into the buffer backend registry
   // Each backend is completely serialization-independent
-  try {
-    std::cerr << "[RMW Zenoh] Loading buffer backend plugins via pluginlib...\n";
-    rosidl_buffer_registry::BufferBackendRegistry::get_instance().load_plugins();
-  } catch (const std::exception & e) {
-    std::cerr << "[RMW Zenoh] Plugin loading exception: " << e.what() << "\n";
-    // Non-fatal: No buffer backend plugins found
-    // This is expected on systems without vendor buffer support (CPU-only systems)
-  }
+  auto & buffer_backend_registry = rosidl_buffer_registry::BufferBackendRegistry::get_instance();
+  buffer_backend_registry.load_plugins();
 
   // Populate global maps in rosidl_typesupport_fastrtps_cpp
   // Map 1: Backend descriptor operations (technology-independent)
   // Map 2: FastCDR descriptor serializers (technology-specific)
-  auto & generic_registry = rosidl_buffer_registry::BufferBackendRegistry::get_instance();
-  std::cerr << "[RMW Zenoh] Generic registry instance at: " << &generic_registry << "\n";
 
   auto & backend_ops = rosidl_typesupport_fastrtps_cpp::get_backend_descriptor_ops();
-  std::cerr << "[RMW Zenoh] Backend ops map at: " << &backend_ops << "\n";
-
-  auto backend_names = generic_registry.get_backend_names();
-  std::cerr << "[RMW Zenoh] Found " << backend_names.size() << " backend(s)\n";
+  auto backend_names = buffer_backend_registry.get_backend_names();
+  RMW_ZENOH_LOG_INFO_NAMED("rmw_zenoh_cpp", "Found %d backend(s)", backend_names.size());
 
   for (const auto & backend_name : backend_names) {
-    std::cerr << "[RMW Zenoh] Processing backend: " << backend_name << "\n";
+    RMW_ZENOH_LOG_INFO_NAMED("rmw_zenoh_cpp", "Processing backend: %s", backend_name.c_str());
 
-    auto backend = generic_registry.get_backend(backend_name);
+    auto backend = buffer_backend_registry.get_backend(backend_name);
     if (!backend) {
-      std::cerr << "[RMW Zenoh]   ERROR: Backend pointer is null!\n";
+      RMW_ZENOH_LOG_ERROR_NAMED("rmw_zenoh_cpp", "Backend pointer is null!");
       continue;
     }
 
     std::string backend_type = backend->get_backend_type();
-    std::cerr << "[RMW Zenoh]   Backend type: " << backend_type << "\n";
-    std::cerr << "[RMW Zenoh]   Descriptor type: " << backend->get_descriptor_type_name() << "\n";
+    RMW_ZENOH_LOG_INFO_NAMED("rmw_zenoh_cpp", "  Descriptor type: %s", backend->get_descriptor_type_name().c_str());
 
     // Populate backend descriptor operations map
     rosidl_typesupport_fastrtps_cpp::BackendDescriptorOps ops;
@@ -92,25 +82,18 @@ void initialize_buffer_backends()
       };
 
     backend_ops[backend_type] = ops;
-    std::cerr << "[RMW Zenoh]   ✓ Registered backend ops for: " << backend_type << "\n";
 
     // Call FastCDR registration function to populate serializers map
-    std::cerr << "[RMW Zenoh]   Getting FastCDR registration function...\n";
     void * reg_func_ptr = backend->get_descriptor_registration_function();
 
     if (reg_func_ptr) {
-      std::cerr << "[RMW Zenoh]   Found registration function at " << reg_func_ptr <<
-        ", calling it...\n";
       auto register_func = reinterpret_cast<RegisterDescriptorFunc>(reg_func_ptr);
       register_func();
-      std::cerr << "[RMW Zenoh]   ✓ Successfully called FastCDR registration\n";
+      RMW_ZENOH_LOG_INFO_NAMED("rmw_zenoh_cpp", "  Successfully called FastCDR registration");
     } else {
-      std::cerr << "[RMW Zenoh]   ✗ Backend does not provide FastCDR registration function\n";
+      RMW_ZENOH_LOG_ERROR_NAMED("rmw_zenoh_cpp", "  Backend does not provide FastCDR registration function");
     }
   }
-
-  std::cerr << "[RMW Zenoh] Buffer backend initialization complete\n";
-  std::cerr << "[RMW Zenoh] Total backends registered: " << backend_ops.size() << "\n";
 
   // Register endpoint compatibility resolver for endpoint-aware serialization.
   rosidl_typesupport_fastrtps_cpp::get_endpoint_compatibility_resolver() =
@@ -121,32 +104,26 @@ void initialize_buffer_backends()
 
 void shutdown_buffer_backends()
 {
-  std::cerr << "[RMW Zenoh] Shutting down buffer backends...\n";
-
   // Clear global serialization maps that hold lambdas capturing backend shared_ptrs
   // This MUST be done before BufferBackendRegistry singleton is destroyed
   // to prevent ClassLoader from trying to unload while objects exist
   try {
     auto & backend_ops = rosidl_typesupport_fastrtps_cpp::get_backend_descriptor_ops();
     backend_ops.clear();
-    std::cerr << "[RMW Zenoh] Cleared backend descriptor ops\n";
 
     auto & serializers = rosidl_typesupport_fastrtps_cpp::get_descriptor_serializers();
     serializers.clear();
-    std::cerr << "[RMW Zenoh] Cleared descriptor serializers\n";
   } catch (const std::exception & e) {
-    std::cerr << "[RMW Zenoh] Warning during buffer backend shutdown: " << e.what() << "\n";
+    RMW_ZENOH_LOG_ERROR_NAMED("rmw_zenoh_cpp", "Warning during buffer backend shutdown: %s", e.what());
   }
 
   // Clear the backend registry to release shared_ptr to plugin instances
   try {
     rosidl_buffer_registry::BufferBackendRegistry::get_instance().clear_global_state();
-    std::cerr << "[RMW Zenoh] Cleared buffer backend registry\n";
   } catch (const std::exception & e) {
-    std::cerr << "[RMW Zenoh] Warning clearing backend registry: " << e.what() << "\n";
+    RMW_ZENOH_LOG_ERROR_NAMED("rmw_zenoh_cpp", "Warning clearing backend registry: %s", e.what());
   }
 
-  std::cerr << "[RMW Zenoh] Buffer backend shutdown complete\n";
   rosidl_typesupport_fastrtps_cpp::get_endpoint_compatibility_resolver() = nullptr;
 }
 
@@ -194,7 +171,7 @@ std::vector<std::string> get_installed_backend_types()
       }
     }
   } catch (const std::exception & e) {
-    std::cerr << "[RMW Zenoh] Warning getting backend types: " << e.what() << "\n";
+    RMW_ZENOH_LOG_ERROR_NAMED("rmw_zenoh_cpp", "Warning getting backend types: %s", e.what());
   }
 
   return backend_types;

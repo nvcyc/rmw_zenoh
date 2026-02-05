@@ -866,10 +866,6 @@ rmw_ret_t SubscriptionData::take_one_message(
       "SubscriptionData not able to get slice data");
     return RMW_RET_ERROR;
   }
-  RMW_ZENOH_LOG_INFO_NAMED(
-    "rmw_zenoh_cpp",
-    "[Subscription] Preparing to deserialize message, payload size: %zu bytes",
-    payload_data.size());
 
   // Object that manages the raw buffer
   // FastCDR needs extra space for internal operations during deserialization
