@@ -19,7 +19,7 @@
 #include <string>
 
 #include "detail/logging_macros.hpp"
-#include "rosidl_buffer_registry/buffer_backend_registry.hpp"
+#include "rcl_buffer_backend_registry/buffer_backend_registry.hpp"
 #include "rosidl_typesupport_fastrtps_cpp/buffer_serialization.hpp"
 
 namespace rmw_zenoh_cpp
@@ -42,7 +42,7 @@ void initialize_buffer_backends()
 
   // Load all available buffer backends via pluginlib into the buffer backend registry
   // Each backend is completely serialization-independent
-  auto & buffer_backend_registry = rosidl_buffer_registry::BufferBackendRegistry::get_instance();
+  auto & buffer_backend_registry = rcl_buffer_backend_registry::BufferBackendRegistry::get_instance();
   buffer_backend_registry.load_plugins();
 
   // Populate global maps in rosidl_typesupport_fastrtps_cpp
@@ -119,7 +119,7 @@ void shutdown_buffer_backends()
 
   // Clear the backend registry to release shared_ptr to plugin instances
   try {
-    rosidl_buffer_registry::BufferBackendRegistry::get_instance().clear_global_state();
+    rcl_buffer_backend_registry::BufferBackendRegistry::get_instance().clear_global_state();
   } catch (const std::exception & e) {
     RMW_ZENOH_LOG_ERROR_NAMED("rmw_zenoh_cpp", "Warning clearing backend registry: %s", e.what());
   }
@@ -157,7 +157,7 @@ std::vector<std::string> get_installed_backend_types()
 
   // Get additional backends from the registry
   try {
-    auto & registry = rosidl_buffer_registry::BufferBackendRegistry::get_instance();
+    auto & registry = rcl_buffer_backend_registry::BufferBackendRegistry::get_instance();
     auto backend_names = registry.get_backend_names();
 
     for (const auto & backend_name : backend_names) {
@@ -226,7 +226,7 @@ std::unordered_map<std::string, std::string> collect_backend_aux_info()
 {
   std::unordered_map<std::string, std::string> aux_info;
 
-  auto & registry = rosidl_buffer_registry::BufferBackendRegistry::get_instance();
+  auto & registry = rcl_buffer_backend_registry::BufferBackendRegistry::get_instance();
   for (const auto & backend_name : registry.get_backend_names()) {
     auto backend = registry.get_backend(backend_name);
     if (!backend) {
@@ -242,7 +242,7 @@ std::unordered_map<std::string, std::string> collect_backend_aux_info()
 void inform_backends_on_creating_endpoint(
   const rmw_topic_endpoint_info_t & endpoint_info)
 {
-  auto & registry = rosidl_buffer_registry::BufferBackendRegistry::get_instance();
+  auto & registry = rcl_buffer_backend_registry::BufferBackendRegistry::get_instance();
   for (const auto & backend_name : registry.get_backend_names()) {
     auto backend = registry.get_backend(backend_name);
     if (!backend) {
@@ -260,7 +260,7 @@ std::unordered_map<std::string, bool> inform_backends_on_discovering_endpoint(
   const std::unordered_map<std::string, std::string> & endpoint_supported_backends)
 {
   std::unordered_map<std::string, bool> backend_compatibility;
-  auto & registry = rosidl_buffer_registry::BufferBackendRegistry::get_instance();
+  auto & registry = rcl_buffer_backend_registry::BufferBackendRegistry::get_instance();
   for (const auto & backend_name : registry.get_backend_names()) {
     auto backend = registry.get_backend(backend_name);
     if (!backend) {
