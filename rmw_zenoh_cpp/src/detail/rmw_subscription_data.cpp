@@ -870,6 +870,7 @@ rmw_ret_t SubscriptionData::take_one_message(
   // Object that manages the raw buffer
   // FastCDR needs extra space for internal operations during deserialization
   // Allocate a larger buffer and copy the payload data
+  // TODO(): Use the actual serialized size of the message instead of a conservative estimate
   size_t buffer_size = payload_data.size() * 4 + 65536;  // 4x + 64KB safety margin (very conservative)
   rcutils_allocator_t * allocator = &rmw_node_->context->options.allocator;
   void * buffer_data = allocator->allocate(buffer_size, allocator->state);
@@ -883,42 +884,24 @@ rmw_ret_t SubscriptionData::take_one_message(
     });
 
   // Copy payload data to the larger buffer
-  std::cerr << "[take_one_message] About to copy " << payload_data.size() <<
-    " bytes to buffer (allocated: " << buffer_size << " bytes)\n";
   std::memcpy(buffer_data, payload_data.data(), payload_data.size());
-  std::cerr << "[take_one_message] Memory copy complete\n";
 
   // FastCDR needs to know the actual data size, not the buffer size
-  std::cerr << "[take_one_message] Creating FastBuffer with payload_size=" <<
-    payload_data.size() << "\n";
   eprosima::fastcdr::FastBuffer fastbuffer(
     reinterpret_cast<char *>(buffer_data),
     payload_data.size());  // Use actual payload size, not allocated buffer size
 
-  std::cerr << "[take_one_message] Creating Cdr deserializer\n";
   // Object that deserializes the data
   rmw_zenoh_cpp::Cdr deser(fastbuffer);
 
-  std::cerr << "[take_one_message] FastBuffer created with buffer_size=" << buffer_size
-            << ", payload_size=" << payload_data.size()
-            << ", is_buffer_aware_=" << is_buffer_aware_ << "\n";
-
-  RMW_ZENOH_LOG_INFO_NAMED(
-    "rmw_zenoh_cpp",
-    "[Subscription] FastBuffer created, starting deserialization...");
-
-  // Use endpoint-aware deserialization for Buffer-aware subscriptions
   bool deserialize_success = false;
 
   try {
     if (is_buffer_aware_) {
+      // Use endpoint-aware deserialization for Buffer-aware subscriptions
       RMW_ZENOH_LOG_INFO_NAMED(
         "rmw_zenoh_cpp",
-        "[Subscription] Using endpoint-aware deserialization");
-
-      std::cerr << "[take_one_message] Calling deserialize_ros_message_with_endpoint\n";
-      std::cerr << "[take_one_message] CDR state before deserialize - buffer_size=" <<
-        buffer_size << ", payload_size=" << payload_data.size() << "\n";
+        "[Subscription] Using endpoint-aware deserialization for buffer-aware message");
 
       const rmw_topic_endpoint_info_t empty_endpoint_info =
         rmw_get_zero_initialized_topic_endpoint_info();
@@ -931,9 +914,6 @@ rmw_ret_t SubscriptionData::take_one_message(
         ros_message,
         type_support_impl_,
         *endpoint_info);
-
-      std::cerr << "[take_one_message] deserialize_ros_message_with_endpoint returned: " <<
-        deserialize_success << "\n";
     } else {
       // Simple path: standard deserialization
       deserialize_success = type_support_->deserialize_ros_message(
@@ -942,7 +922,6 @@ rmw_ret_t SubscriptionData::take_one_message(
         type_support_impl_);
     }
   } catch (const std::exception & e) {
-    std::cerr << "[take_one_message] EXCEPTION CAUGHT: " << e.what() << "\n";
     RMW_ZENOH_LOG_ERROR_NAMED(
       "rmw_zenoh_cpp",
       "[Subscription] EXCEPTION during deserialization: %s", e.what());
@@ -954,10 +933,6 @@ rmw_ret_t SubscriptionData::take_one_message(
     RMW_SET_ERROR_MSG("could not deserialize ROS message");
     return RMW_RET_ERROR;
   }
-
-  RMW_ZENOH_LOG_INFO_NAMED(
-    "rmw_zenoh_cpp",
-    "[Subscription] Deserialization completed successfully");
 
   if (message_info != nullptr) {
     message_info->source_timestamp = msg_data->attachment.source_timestamp();

@@ -359,6 +359,8 @@ rmw_ret_t PublisherData::publish_buffer_aware(
 {
   (void)shm;  // SHM not currently used for buffer-aware publishing
 
+  RMW_ZENOH_LOG_INFO_NAMED("rmw_zenoh_cpp", "[Publisher] Publishing buffer-aware message for topic '%s' (message type: %s)", entity_->topic_info()->name_.c_str(), entity_->topic_info()->type_.c_str());
+
   // For buffer-aware publishers, route to different endpoints based on discovered subscribers
   if (discovered_subscribers_.empty()) {
     // No subscribers yet, skip publish
@@ -377,7 +379,7 @@ rmw_ret_t PublisherData::publish_buffer_aware(
     iteration++;
     RMW_ZENOH_LOG_INFO_NAMED(
       "rmw_zenoh_cpp",
-      "[Publisher] Processing endpoint %zu/%zu with key='%s'",
+      "[Publisher] Processing message for endpoint %zu/%zu with key='%s'",
       iteration, discovered_subscribers_.size(), sub.endpoint_key.c_str());
 
     auto endpoint_it = endpoints_.find(sub.endpoint_key);
@@ -389,17 +391,9 @@ rmw_ret_t PublisherData::publish_buffer_aware(
     size_t max_data_length = type_support_->get_estimated_serialized_size(
       ros_message, type_support_impl_);
 
-    RMW_ZENOH_LOG_INFO_NAMED(
-      "rmw_zenoh_cpp",
-      "[Publisher] Estimated serialized size: %zu bytes", max_data_length);
-
     // Quadruple the buffer size for safety (endpoint-aware serialization needs more space)
     // TODO(native-buffer): Fix the size estimation in buffer_serialization.hpp to be more accurate
     max_data_length = max_data_length * 4 + 16384;
-
-    RMW_ZENOH_LOG_INFO_NAMED(
-      "rmw_zenoh_cpp",
-      "[Publisher] Allocating buffer: %zu bytes (2x + 8KB safety margin)", max_data_length);
 
     rcutils_allocator_t * allocator = &rmw_node_->context->options.allocator;
     void * data = allocator->allocate(max_data_length, allocator->state);
@@ -416,10 +410,6 @@ rmw_ret_t PublisherData::publish_buffer_aware(
     uint8_t * msg_bytes = static_cast<uint8_t *>(data);
     eprosima::fastcdr::FastBuffer fastbuffer(reinterpret_cast<char *>(msg_bytes), max_data_length);
     rmw_zenoh_cpp::Cdr ser(fastbuffer);
-
-    RMW_ZENOH_LOG_INFO_NAMED(
-      "rmw_zenoh_cpp",
-      "[Publisher] Starting endpoint-aware serialization...");
 
     rmw_zenoh_cpp::set_thread_local_backend_compatibility(&sub.backend_compat);
     bool ok = type_support_->serialize_ros_message_with_endpoint(
@@ -457,27 +447,15 @@ rmw_ret_t PublisherData::publish_buffer_aware(
     // Create attachment AFTER serialization
     RMW_ZENOH_LOG_INFO_NAMED(
       "rmw_zenoh_cpp",
-      "[Publisher] Creating attachment data...");
+      "[Publisher] Creating message attachment data");
 
     int64_t source_timestamp = rmw_zenoh_cpp::get_system_time_in_ns();
     auto gid = entity_->copy_gid();
 
-    RMW_ZENOH_LOG_INFO_NAMED(
-      "rmw_zenoh_cpp",
-      "[Publisher] Creating AttachmentData object...");
-
     auto attachment_data = rmw_zenoh_cpp::AttachmentData(
       sequence_number_++, source_timestamp, gid);
 
-    RMW_ZENOH_LOG_INFO_NAMED(
-      "rmw_zenoh_cpp",
-      "[Publisher] Serializing attachment to zbytes...");
-
     auto attachment_bytes = attachment_data.serialize_to_zbytes();
-
-    RMW_ZENOH_LOG_INFO_NAMED(
-      "rmw_zenoh_cpp",
-      "[Publisher] Attachment created successfully");
 
     zenoh::ext::AdvancedPublisher::PutOptions options =
       zenoh::ext::AdvancedPublisher::PutOptions::create_default();
@@ -488,13 +466,9 @@ rmw_ret_t PublisherData::publish_buffer_aware(
     if (endpoint->pub.has_value()) {
       RMW_ZENOH_LOG_INFO_NAMED(
         "rmw_zenoh_cpp",
-        "[Publisher] Calling Zenoh put...");
+        "[Publisher] Calling Zenoh put");
 
       endpoint->pub.value().put(std::move(payload), std::move(options), &result);
-
-      RMW_ZENOH_LOG_INFO_NAMED(
-        "rmw_zenoh_cpp",
-        "[Publisher] Zenoh put completed with result: %d", result);
 
       if (result != Z_OK) {
         RMW_ZENOH_LOG_ERROR_NAMED(
@@ -504,10 +478,6 @@ rmw_ret_t PublisherData::publish_buffer_aware(
       }
     }
   }
-
-  RMW_ZENOH_LOG_INFO_NAMED(
-    "rmw_zenoh_cpp",
-    "[Publisher] publish_buffer_aware() returning successfully");
 
   return ret;
 }
