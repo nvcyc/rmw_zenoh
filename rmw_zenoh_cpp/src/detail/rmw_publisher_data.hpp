@@ -28,6 +28,7 @@
 
 #include <zenoh.hxx>
 
+#include "endpoint_info.hpp"
 #include "event.hpp"
 #include "graph_cache.hpp"
 #include "liveliness_utils.hpp"
@@ -39,7 +40,6 @@
 
 #include "rmw/rmw.h"
 #include "rmw/ret_types.h"
-#include "rmw/topic_endpoint_info.h"
 
 namespace rmw_zenoh_cpp
 {
@@ -97,14 +97,6 @@ public:
 
 private:
   // Structures for Buffer-aware publishers
-  struct EndpointInfoStorage
-  {
-    rmw_topic_endpoint_info_t info{};
-    std::string node_name;
-    std::string node_namespace;
-    std::string topic_type;
-  };
-
   struct SubscriberInfo
   {
     rmw_gid_t gid;

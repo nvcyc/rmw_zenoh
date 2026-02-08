@@ -42,21 +42,21 @@ void initialize_buffer_backends()
 
   // Load all available buffer backends via pluginlib into the buffer backend registry
   // Each backend is completely serialization-independent
-  auto & buffer_backend_registry = rcl_buffer_backend_registry::BufferBackendRegistry::get_instance();
-  buffer_backend_registry.load_plugins();
+  auto & registry = rcl_buffer_backend_registry::BufferBackendRegistry::get_instance();
+  registry.load_plugins();
 
   // Populate global maps in rosidl_typesupport_fastrtps_cpp
   // Map 1: Backend descriptor operations (technology-independent)
   // Map 2: FastCDR descriptor serializers (technology-specific)
 
   auto & backend_ops = rosidl_typesupport_fastrtps_cpp::get_backend_descriptor_ops();
-  auto backend_names = buffer_backend_registry.get_backend_names();
+  auto backend_names = registry.get_backend_names();
   RMW_ZENOH_LOG_INFO_NAMED("rmw_zenoh_cpp", "Found %d backend(s)", backend_names.size());
 
   for (const auto & backend_name : backend_names) {
     RMW_ZENOH_LOG_INFO_NAMED("rmw_zenoh_cpp", "Processing backend: %s", backend_name.c_str());
 
-    auto backend = buffer_backend_registry.get_backend(backend_name);
+    auto backend = registry.get_backend(backend_name);
     if (!backend) {
       RMW_ZENOH_LOG_ERROR_NAMED("rmw_zenoh_cpp", "Backend pointer is null!");
       continue;
@@ -145,135 +145,6 @@ bool get_thread_local_backend_compatibility(const std::string & backend_type)
     return true;
   }
   return it->second;
-}
-
-///=============================================================================
-std::vector<std::string> get_installed_backend_types()
-{
-  std::vector<std::string> backend_types;
-
-  // Always include CPU backend
-  backend_types.push_back("cpu");
-
-  // Get additional backends from the registry
-  try {
-    auto & registry = rcl_buffer_backend_registry::BufferBackendRegistry::get_instance();
-    auto backend_names = registry.get_backend_names();
-
-    for (const auto & backend_name : backend_names) {
-      auto backend = registry.get_backend(backend_name);
-      if (backend) {
-        std::string backend_type = backend->get_backend_type();
-        // Avoid duplicating CPU if it's in the registry
-        if (backend_type != "cpu") {
-          backend_types.push_back(backend_type);
-        }
-      }
-    }
-  } catch (const std::exception & e) {
-    RMW_ZENOH_LOG_ERROR_NAMED("rmw_zenoh_cpp", "Warning getting backend types: %s", e.what());
-  }
-
-  return backend_types;
-}
-
-///=============================================================================
-bool backends_compatible(
-  const std::vector<std::string> & a,
-  const std::vector<std::string> & b)
-{
-  // Check if there's at least one common backend
-  for (const auto & backend_a : a) {
-    for (const auto & backend_b : b) {
-      if (backend_a == backend_b) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
-///=============================================================================
-std::vector<std::string> get_common_backends(
-  const std::vector<std::string> & a,
-  const std::vector<std::string> & b)
-{
-  std::vector<std::string> common;
-
-  for (const auto & backend_a : a) {
-    for (const auto & backend_b : b) {
-      if (backend_a == backend_b) {
-        // Check if not already in common
-        bool already_added = false;
-        for (const auto & c : common) {
-          if (c == backend_a) {
-            already_added = true;
-            break;
-          }
-        }
-        if (!already_added) {
-          common.push_back(backend_a);
-        }
-      }
-    }
-  }
-
-  return common;
-}
-
-///=============================================================================
-std::unordered_map<std::string, std::string> collect_backend_aux_info()
-{
-  std::unordered_map<std::string, std::string> aux_info;
-
-  auto & registry = rcl_buffer_backend_registry::BufferBackendRegistry::get_instance();
-  for (const auto & backend_name : registry.get_backend_names()) {
-    auto backend = registry.get_backend(backend_name);
-    if (!backend) {
-      continue;
-    }
-    aux_info[backend_name] = backend->get_backend_aux_info();
-  }
-
-  return aux_info;
-}
-
-///=============================================================================
-void inform_backends_on_creating_endpoint(
-  const rmw_topic_endpoint_info_t & endpoint_info)
-{
-  auto & registry = rcl_buffer_backend_registry::BufferBackendRegistry::get_instance();
-  for (const auto & backend_name : registry.get_backend_names()) {
-    auto backend = registry.get_backend(backend_name);
-    if (!backend) {
-      continue;
-    }
-    backend->on_creating_endpoint(endpoint_info);
-  }
-}
-
-///=============================================================================
-std::unordered_map<std::string, bool> inform_backends_on_discovering_endpoint(
-  const rmw_topic_endpoint_info_t & endpoint_info,
-  const std::vector<rmw_topic_endpoint_info_t> & existing_endpoints,
-  std::unordered_map<std::string, std::vector<std::set<uint32_t>>> & backend_endpoint_groups,
-  const std::unordered_map<std::string, std::string> & endpoint_supported_backends)
-{
-  std::unordered_map<std::string, bool> backend_compatibility;
-  auto & registry = rcl_buffer_backend_registry::BufferBackendRegistry::get_instance();
-  for (const auto & backend_name : registry.get_backend_names()) {
-    auto backend = registry.get_backend(backend_name);
-    if (!backend) {
-      backend_compatibility[backend_name] = false;
-      backend_endpoint_groups[backend_name] = {};
-      continue;
-    }
-    auto result = backend->on_discovering_endpoint(
-      endpoint_info, existing_endpoints, endpoint_supported_backends);
-    backend_compatibility[backend_name] = result.first;
-    backend_endpoint_groups[backend_name] = std::move(result.second);
-  }
-  return backend_compatibility;
 }
 
 }  // namespace rmw_zenoh_cpp
