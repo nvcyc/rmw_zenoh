@@ -30,9 +30,6 @@ namespace
 thread_local const std::unordered_map<std::string, bool> * g_tls_backend_compat = nullptr;
 }  // namespace
 
-// Function pointer type for descriptor registration functions
-using RegisterDescriptorFunc = void (*)();
-
 void initialize_buffer_backends()
 {
   std::cerr << "[RMW Zenoh] Initializing buffer backends...\n";
@@ -83,15 +80,20 @@ void initialize_buffer_backends()
 
     backend_ops[backend_type] = ops;
 
-    // Call FastCDR registration function to populate serializers map
-    void * reg_func_ptr = backend->get_descriptor_registration_function();
-
-    if (reg_func_ptr) {
-      auto register_func = reinterpret_cast<RegisterDescriptorFunc>(reg_func_ptr);
-      register_func();
-      RMW_ZENOH_LOG_INFO_NAMED("rmw_zenoh_cpp", "  Successfully called FastCDR registration");
+    // Verify that the backend registered its FastCDR descriptor serializers
+    // (backends auto-register in their constructor via register_buffer_descriptor<T>())
+    auto & serializers = rosidl_typesupport_fastrtps_cpp::get_descriptor_serializers();
+    if (serializers.find(backend_type) != serializers.end()) {
+      RMW_ZENOH_LOG_INFO_NAMED(
+        "rmw_zenoh_cpp", "  FastCDR descriptor serializers registered for '%s'",
+        backend_type.c_str());
     } else {
-      RMW_ZENOH_LOG_ERROR_NAMED("rmw_zenoh_cpp", "  Backend does not provide FastCDR registration function");
+      RMW_ZENOH_LOG_ERROR_NAMED(
+        "rmw_zenoh_cpp",
+        "  Backend '%s' did not register FastCDR descriptor serializers. "
+        "Ensure the backend constructor calls "
+        "rcl_buffer::register_buffer_descriptor<DescriptorMsgT>()",
+        backend_type.c_str());
     }
   }
 
