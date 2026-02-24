@@ -133,27 +133,87 @@ std::shared_ptr<SubscriptionData> SubscriptionData::make(
   bool has_buffer_fields = callbacks->has_buffer_fields;
   bool is_buffer_aware = has_buffer_fields;
 
-  std::cerr << "[SubscriptionData::make] Topic: " << topic_name
-            << ", has_buffer_fields: " << has_buffer_fields
-            << ", is_buffer_aware: " << is_buffer_aware << "\n";
-  std::cerr << "[SubscriptionData::make] callbacks=" << callbacks
-            << ", type_support=" << type_support
-            << ", type_support->typesupport_identifier="
-            << (type_support ? type_support->typesupport_identifier : "null")
-            << "\n";
+  RMW_ZENOH_LOG_DEBUG_NAMED(
+    "rmw_zenoh_cpp",
+    "[SubscriptionData::make] Topic: %s, has_buffer_fields: %d, is_buffer_aware: %d",
+    topic_name.c_str(), has_buffer_fields, is_buffer_aware);
 
-  // Query installed backends if message type has Buffer fields
+  // Query and filter installed backends based on acceptable_buffer_backends option
   std::optional<std::unordered_map<std::string, std::string>> backend_types = std::nullopt;
   std::vector<std::string> my_backend_types;
   if (is_buffer_aware) {
     auto & backend_registry = rcl_buffer_backend_registry::BufferBackendRegistry::get_instance();
-    my_backend_types = backend_registry.get_backend_types();
-    backend_types = backend_registry.get_all_aux_info();
-    std::cerr << "[SubscriptionData::make] Found " << my_backend_types.size() << " backends\n";
-    RMW_ZENOH_LOG_DEBUG_NAMED(
-      "rmw_zenoh_cpp",
-      "Creating Buffer-aware subscription for topic %s with %zu backends",
-      topic_name.c_str(), my_backend_types.size());
+    auto all_installed = backend_registry.get_backend_types();
+    auto all_aux_info = backend_registry.get_all_aux_info();
+
+    const char * requested = sub_options.acceptable_buffer_backends;
+
+    if (requested != nullptr && strlen(requested) > 0) {
+      // Parse comma-separated list of acceptable backends
+      std::vector<std::string> requested_list;
+      {
+        std::istringstream stream(requested);
+        std::string token;
+        while (std::getline(stream, token, ',')) {
+          // Trim whitespace
+          size_t start = token.find_first_not_of(" \t");
+          size_t end = token.find_last_not_of(" \t");
+          if (start != std::string::npos) {
+            requested_list.push_back(token.substr(start, end - start + 1));
+          }
+        }
+      }
+
+      // Validate: every requested non-CPU backend must be installed
+      for (const auto & name : requested_list) {
+        if (name == "cpu") {
+          continue;
+        }
+        if (std::find(all_installed.begin(), all_installed.end(), name) ==
+          all_installed.end())
+        {
+          std::string available_str;
+          for (size_t i = 0; i < all_installed.size(); ++i) {
+            if (i > 0) {available_str += ", ";}
+            available_str += all_installed[i];
+          }
+          RMW_SET_ERROR_MSG_WITH_FORMAT_STRING(
+            "Buffer backend '%s' specified in acceptable_buffer_backends "
+            "is not installed. Available backends: %s",
+            name.c_str(), available_str.c_str());
+          return nullptr;
+        }
+      }
+
+      // Filter: only include requested backends and collect their aux info
+      std::unordered_map<std::string, std::string> filtered_aux_info;
+      for (const auto & name : requested_list) {
+        if (name == "cpu") {
+          continue;
+        }
+        my_backend_types.push_back(name);
+        auto aux_it = all_aux_info.find(name);
+        if (aux_it != all_aux_info.end()) {
+          filtered_aux_info[name] = aux_it->second;
+        }
+      }
+      backend_types = filtered_aux_info;
+
+      RMW_ZENOH_LOG_DEBUG_NAMED(
+        "rmw_zenoh_cpp",
+        "Creating subscription for topic %s with %zu filtered backends "
+        "(from acceptable_buffer_backends='%s')",
+        topic_name.c_str(), my_backend_types.size(), requested);
+    } else {
+      // Default: all installed backends
+      my_backend_types = all_installed;
+      backend_types = all_aux_info;
+
+      RMW_ZENOH_LOG_DEBUG_NAMED(
+        "rmw_zenoh_cpp",
+        "Creating Buffer-aware subscription for topic %s with %zu backends (all installed)",
+        topic_name.c_str(), my_backend_types.size());
+    }
   }
 
   // Convert the type hash to a string so that it can be included in the keyexpr.
