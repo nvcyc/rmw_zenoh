@@ -97,9 +97,9 @@ SubscriptionData::Message::Message(
   const zenoh::Bytes & p,
   uint64_t recv_ts,
   AttachmentData && attachment_,
-  const rmw_topic_endpoint_info_t * endpoint_info_)
+  std::optional<EndpointInfoStorage> endpoint_info_)
 : payload(p), recv_timestamp(recv_ts), attachment(std::move(attachment_)),
-  endpoint_info(endpoint_info_)
+  endpoint_info(std::move(endpoint_info_))
 {
 }
 
@@ -681,10 +681,10 @@ void SubscriptionData::create_subscription_for_key(
   auto endpoint = std::make_shared<SubscriptionEndpoint>();
   endpoint->key = key;
   endpoint->publisher_info = publisher_info;
-  const rmw_topic_endpoint_info_t * endpoint_info_ptr = &endpoint->publisher_info.info;
 
   std::weak_ptr<SubscriptionData> data_wp = shared_from_this();
-  auto on_sample = [data_wp, endpoint_info_ptr, key](const zenoh::Sample & sample) {
+  auto ep = endpoint;
+  auto on_sample = [data_wp, ep, key](const zenoh::Sample & sample) {
       auto sub_data = data_wp.lock();
       if (sub_data == nullptr) {
         return;
@@ -712,7 +712,7 @@ void SubscriptionData::create_subscription_for_key(
           sample.get_payload(),
           get_system_time_in_ns(),
           std::move(attachment_data),
-          endpoint_info_ptr),
+          ep->publisher_info),
         std::string(sample.get_keyexpr().as_string_view()));
     };
 
@@ -902,15 +902,14 @@ rmw_ret_t SubscriptionData::take_one_message(
 
       const rmw_topic_endpoint_info_t empty_endpoint_info =
         rmw_get_zero_initialized_topic_endpoint_info();
-      const rmw_topic_endpoint_info_t * endpoint_info =
-        msg_data->endpoint_info != nullptr ? msg_data->endpoint_info : &empty_endpoint_info;
+      const rmw_topic_endpoint_info_t & endpoint_info =
+        msg_data->endpoint_info.has_value() ? msg_data->endpoint_info->info : empty_endpoint_info;
 
-      // Use type_support_->deserialize_ros_message_with_endpoint() which handles encapsulation reading
       deserialize_success = type_support_->deserialize_ros_message_with_endpoint(
         deser.get_cdr(),
         ros_message,
         type_support_impl_,
-        *endpoint_info);
+        endpoint_info);
     } else {
       // Simple path: standard deserialization
       deserialize_success = type_support_->deserialize_ros_message(

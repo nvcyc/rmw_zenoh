@@ -383,10 +383,12 @@ rmw_ret_t PublisherData::publish_buffer_aware(
     eprosima::fastcdr::FastBuffer fastbuffer(reinterpret_cast<char *>(msg_bytes), max_data_length);
     rmw_zenoh_cpp::Cdr ser(fastbuffer);
 
-    rmw_zenoh_cpp::set_thread_local_backend_compatibility(&sub.backend_compat);
-    bool ok = type_support_->serialize_ros_message_with_endpoint(
-      ros_message, ser.get_cdr(), type_support_impl_, sub.endpoint_info.info);
-    rmw_zenoh_cpp::set_thread_local_backend_compatibility(nullptr);
+    bool ok = false;
+    {
+      rmw_zenoh_cpp::BackendCompatibilityGuard compat_guard(sub.backend_compat);
+      ok = type_support_->serialize_ros_message_with_endpoint(
+        ros_message, ser.get_cdr(), type_support_impl_, sub.endpoint_info.info);
+    }
     if (!ok) {
       RMW_SET_ERROR_MSG("could not serialize ROS message with endpoint awareness");
       return RMW_RET_ERROR;

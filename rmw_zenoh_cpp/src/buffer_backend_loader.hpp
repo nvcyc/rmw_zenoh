@@ -36,6 +36,26 @@ void set_thread_local_backend_compatibility(
 /// Query thread-local backend compatibility for a backend type.
 bool get_thread_local_backend_compatibility(const std::string & backend_type);
 
+/// RAII guard that sets the thread-local backend compatibility map on construction
+/// and clears it on destruction, guaranteeing cleanup even if an exception is thrown.
+class BackendCompatibilityGuard
+{
+public:
+  explicit BackendCompatibilityGuard(
+    const std::unordered_map<std::string, bool> & compat_map)
+  {
+    set_thread_local_backend_compatibility(&compat_map);
+  }
+
+  ~BackendCompatibilityGuard()
+  {
+    set_thread_local_backend_compatibility(nullptr);
+  }
+
+  BackendCompatibilityGuard(const BackendCompatibilityGuard &) = delete;
+  BackendCompatibilityGuard & operator=(const BackendCompatibilityGuard &) = delete;
+};
+
 }  // namespace rmw_zenoh_cpp
 
 #endif  // RMW_ZENOH_CPP__BUFFER_BACKEND_LOADER_HPP_

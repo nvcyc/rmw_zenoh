@@ -56,12 +56,12 @@ public:
       const zenoh::Bytes & p,
       uint64_t recv_ts,
       AttachmentData && attachment_,
-      const rmw_topic_endpoint_info_t * endpoint_info_ = nullptr);
+      std::optional<EndpointInfoStorage> endpoint_info_ = std::nullopt);
 
     Payload payload;
     uint64_t recv_timestamp;
     AttachmentData attachment;
-    const rmw_topic_endpoint_info_t * endpoint_info;
+    std::optional<EndpointInfoStorage> endpoint_info;
   };
 
   // Make a shared_ptr of SubscriptionData.
