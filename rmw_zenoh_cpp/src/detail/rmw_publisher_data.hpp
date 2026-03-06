@@ -130,8 +130,12 @@ private:
   // Discovery callback for Buffer-aware publishers
   void on_subscriber_discovered(const liveliness::Entity & entity);
 
-  // Get or create an endpoint for a specific full key
+  // Get or create an endpoint for a specific full key (caller must hold mutex_)
   std::shared_ptr<PublisherEndpoint> get_or_create_endpoint(
+    const std::string & full_key);
+
+  // Create a Zenoh publisher endpoint (does not require mutex_)
+  std::shared_ptr<PublisherEndpoint> create_publisher_endpoint(
     const std::string & full_key);
 
   // Buffer-aware publish helper
@@ -167,6 +171,7 @@ private:
   // For simple publishers: endpoints_ contains only base endpoint
   // For buffer-aware: multiple endpoints based on discovered subscribers
   std::unordered_map<std::string, std::shared_ptr<PublisherEndpoint>> endpoints_;
+  std::set<std::string> pending_endpoints_;
   std::vector<SubscriberInfo> discovered_subscribers_;
   EndpointInfoStorage local_endpoint_info_;
   std::shared_ptr<GraphCache> graph_cache_;

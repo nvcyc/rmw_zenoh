@@ -507,22 +507,9 @@ SubscriptionData::~SubscriptionData()
 ///=============================================================================
 void SubscriptionData::on_publisher_discovered(const liveliness::Entity & entity)
 {
-  std::lock_guard<std::mutex> lock(mutex_);
-
   RMW_ZENOH_RCL_BUFFER_LOG_INFO_NAMED(
     "rmw_zenoh_cpp",
     "[Subscription] on_publisher_discovered callback triggered!");
-
-  if (!is_buffer_aware_) {
-    RMW_ZENOH_RCL_BUFFER_LOG_ERROR_NAMED(
-      "rmw_zenoh_cpp",
-      "[Subscription] Should not be called for non-Buffer-aware subscriptions: "
-      "ignoring discovered entity type=%s node='%s' ns='%s'",
-      entity_type_to_string(entity.type()),
-      entity.node_name().c_str(),
-      entity.node_namespace().c_str());
-    return;  // Should not be called for non-Buffer-aware subscriptions
-  }
 
   if (entity.type() != liveliness::EntityType::Publisher) {
     RMW_ZENOH_RCL_BUFFER_LOG_INFO_NAMED(
@@ -534,7 +521,6 @@ void SubscriptionData::on_publisher_discovered(const liveliness::Entity & entity
     return;
   }
 
-  // Get publisher backend info (empty means CPU-only)
   const auto & topic_info = entity.topic_info();
   if (!topic_info.has_value()) {
     RMW_ZENOH_RCL_BUFFER_LOG_ERROR_NAMED(
@@ -543,7 +529,6 @@ void SubscriptionData::on_publisher_discovered(const liveliness::Entity & entity
     return;
   }
 
-  // Empty or missing backend_aux_info is treated as CPU-only  
   std::unordered_map<std::string, std::string> pub_backend_aux_info;
   std::vector<std::string> pub_backends;
   if (topic_info->backend_aux_info_.has_value() && !topic_info->backend_aux_info_->empty()) {
@@ -553,11 +538,9 @@ void SubscriptionData::on_publisher_discovered(const liveliness::Entity & entity
       pub_backends.push_back(pair.first);
     }
   } else {
-    // Empty means CPU backend implicitly
     pub_backends.push_back("cpu");
   }
 
-  // Check backend compatibility
   if (!rcl_buffer_backend_registry::BufferBackendRegistry::backends_compatible(
       my_backend_types_, pub_backends))
   {
@@ -570,37 +553,49 @@ void SubscriptionData::on_publisher_discovered(const liveliness::Entity & entity
   rmw_gid_t pub_gid = rmw_zenoh_cpp::entity_gid_to_rmw_gid(entity,
       rmw_zenoh_cpp::rmw_zenoh_identifier);
 
-  for (const auto & existing : discovered_publishers_) {
-    if (memcmp(existing.gid.data, pub_gid.data, RMW_GID_STORAGE_SIZE) == 0) {
-      return;
-    }
-  }
-
   auto pub_endpoint_info = build_endpoint_info_from_entity(entity, RMW_ENDPOINT_PUBLISHER);
 
+  // Phase 1: collect state under lock, check duplicates, mark pending
+  std::string full_key;
   std::vector<rmw_topic_endpoint_info_t> existing_endpoints;
-  existing_endpoints.reserve(1 + discovered_publishers_.size());
-  existing_endpoints.push_back(local_endpoint_info_.info);
-  for (const auto & existing : discovered_publishers_) {
-    existing_endpoints.push_back(existing.endpoint_info.info);
-  }
-
   std::unordered_map<std::string, std::vector<std::set<uint32_t>>> backend_endpoint_groups;
-  for (const auto & existing : discovered_publishers_) {
-    backend_endpoint_groups.insert(existing.backend_groups.begin(),
-      existing.backend_groups.end());
+  bool need_create_endpoint = false;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!is_buffer_aware_ || is_shutdown_) {
+      return;
+    }
+
+    for (const auto & existing : discovered_publishers_) {
+      if (memcmp(existing.gid.data, pub_gid.data, RMW_GID_STORAGE_SIZE) == 0) {
+        return;
+      }
+    }
+
+    existing_endpoints.reserve(1 + discovered_publishers_.size());
+    existing_endpoints.push_back(local_endpoint_info_.info);
+    for (const auto & existing : discovered_publishers_) {
+      existing_endpoints.push_back(existing.endpoint_info.info);
+    }
+
+    for (const auto & existing : discovered_publishers_) {
+      backend_endpoint_groups.insert(existing.backend_groups.begin(),
+        existing.backend_groups.end());
+    }
+
+    rmw_gid_t local_gid = rmw_zenoh_cpp::entity_gid_to_rmw_gid(
+      *entity_, rmw_zenoh_cpp::rmw_zenoh_identifier);
+
+    const std::string base_key = entity_->topic_info()->topic_keyexpr_;
+    full_key = base_key + "/" + entity.zid() + "/" + gid_to_hex(local_gid);
+
+    need_create_endpoint = (sub_endpoints_.find(full_key) == sub_endpoints_.end());
+    if (need_create_endpoint) {
+      if (!pending_sub_endpoints_.insert(full_key).second) {
+        return;
+      }
+    }
   }
-
-  std::unordered_map<std::string, std::vector<std::set<uint32_t>>> backend_groups;
-  rcl_buffer_backend_registry::BufferBackendRegistry::get_instance().notify_endpoint_discovered(
-    pub_endpoint_info.info, existing_endpoints, backend_endpoint_groups,
-    pub_backend_aux_info);
-
-  rmw_gid_t local_gid = rmw_zenoh_cpp::entity_gid_to_rmw_gid(
-    *entity_, rmw_zenoh_cpp::rmw_zenoh_identifier);
-
-  const std::string base_key = entity_->topic_info()->topic_keyexpr_;
-  std::string full_key = base_key + "/" + entity.zid() + "/" + gid_to_hex(local_gid);
 
   RMW_ZENOH_RCL_BUFFER_LOG_INFO_NAMED(
     "rmw_zenoh_cpp",
@@ -616,23 +611,54 @@ void SubscriptionData::on_publisher_discovered(const liveliness::Entity & entity
     gid_to_hex(pub_gid).c_str(),
     gid_array_to_hex(entity.copy_gid()).c_str());
 
-  // Create subscription for this key if not already exists
-  if (sub_endpoints_.find(full_key) == sub_endpoints_.end()) {
-    create_subscription_for_key(full_key, pub_endpoint_info);
+  // Phase 2: external operations without lock
+  std::unordered_map<std::string, std::vector<std::set<uint32_t>>> backend_groups;
+  rcl_buffer_backend_registry::BufferBackendRegistry::get_instance().notify_endpoint_discovered(
+    pub_endpoint_info.info, existing_endpoints, backend_endpoint_groups,
+    pub_backend_aux_info);
+
+  std::shared_ptr<SubscriptionEndpoint> new_endpoint;
+  if (need_create_endpoint) {
+    new_endpoint = create_subscription_endpoint(full_key, pub_endpoint_info);
+    if (!new_endpoint) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      pending_sub_endpoints_.erase(full_key);
+      return;
+    }
   }
 
-  // Track publisher
-  PublisherInfo pub_info;
-  pub_info.gid = pub_gid;
-  pub_info.endpoint_key = full_key;
-  pub_info.endpoint_info = std::move(pub_endpoint_info);
-  pub_info.backend_aux_info = pub_backend_aux_info;
-  pub_info.backend_groups = std::move(backend_groups);
-  discovered_publishers_.push_back(std::move(pub_info));
+  // Phase 3: store results under lock
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (new_endpoint) {
+      sub_endpoints_[full_key] = new_endpoint;
+      pending_sub_endpoints_.erase(full_key);
+    }
+
+    PublisherInfo pub_info;
+    pub_info.gid = pub_gid;
+    pub_info.endpoint_key = full_key;
+    pub_info.endpoint_info = std::move(pub_endpoint_info);
+    pub_info.backend_aux_info = pub_backend_aux_info;
+    pub_info.backend_groups = std::move(backend_groups);
+    discovered_publishers_.push_back(std::move(pub_info));
+  }
 }
 
 ///=============================================================================
 void SubscriptionData::create_subscription_for_key(
+  const std::string & key,
+  const EndpointInfoStorage & publisher_info)
+{
+  auto endpoint = create_subscription_endpoint(key, publisher_info);
+  if (endpoint) {
+    sub_endpoints_[key] = endpoint;
+  }
+}
+
+///=============================================================================
+std::shared_ptr<SubscriptionData::SubscriptionEndpoint>
+SubscriptionData::create_subscription_endpoint(
   const std::string & key,
   const EndpointInfoStorage & publisher_info)
 {
@@ -642,7 +668,7 @@ void SubscriptionData::create_subscription_for_key(
     RMW_ZENOH_RCL_BUFFER_LOG_ERROR_NAMED(
       "rmw_zenoh_cpp",
       "Unable to create zenoh keyexpr for key: %s", key.c_str());
-    return;
+    return nullptr;
   }
 
   rmw_context_impl_t * context_impl = static_cast<rmw_context_impl_t *>(rmw_node_->context->impl);
@@ -724,38 +750,50 @@ void SubscriptionData::create_subscription_for_key(
     RMW_ZENOH_LOG_ERROR_NAMED(
       "rmw_zenoh_cpp",
       "Unable to create zenoh subscription for key: %s", key.c_str());
-    return;
+    return nullptr;
   }
 
   endpoint->sub = std::optional<zenoh::ext::AdvancedSubscriber<void>>(std::move(sub));
-  sub_endpoints_[key] = endpoint;
 
   RMW_ZENOH_RCL_BUFFER_LOG_INFO_NAMED(
     "rmw_zenoh_cpp",
     "[Subscription] Created buffer-aware subscription for key: '%s'",
     key.c_str());
+
+  return endpoint;
 }
 
 ///=============================================================================
 rmw_ret_t SubscriptionData::shutdown()
 {
   rmw_ret_t ret = RMW_RET_OK;
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (is_shutdown_ || !initialized_) {
-    return ret;
+  std::unordered_map<std::string, std::shared_ptr<SubscriptionEndpoint>> endpoints_to_destroy;
+  bool was_buffer_aware = false;
+  std::optional<zenoh::ext::AdvancedSubscriber<void>> base_sub;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (is_shutdown_ || !initialized_) {
+      return ret;
+    }
+    is_shutdown_ = true;
+    initialized_ = false;
+    was_buffer_aware = is_buffer_aware_;
+    if (was_buffer_aware) {
+      endpoints_to_destroy = std::move(sub_endpoints_);
+      sub_endpoints_.clear();
+    }
+    if (sub_.has_value()) {
+      base_sub = std::move(sub_);
+      sub_.reset();
+    }
   }
 
-  // Remove any event callbacks registered to this subscription.
   graph_cache_->remove_qos_event_callbacks(entity_->gid_hash());
 
-  // Unregister discovery callbacks if Buffer-aware
-  // NOTE: Skipping to avoid deadlock with graph subscriber callback thread
-  // Callbacks will be cleared when RMW context is destroyed
-  if (is_buffer_aware_) {
-    // graph_cache_->unregister_discovery_callbacks(entity_->gid_hash()); // DISABLED: causes deadlock
+  if (was_buffer_aware) {
+    graph_cache_->unregister_discovery_callbacks(entity_->gid_hash());
   }
 
-  // Unregister this subscription from the ROS graph.
   zenoh::ZResult result;
   std::move(token_).value().undeclare(&result);
   if (result != Z_OK) {
@@ -766,8 +804,7 @@ rmw_ret_t SubscriptionData::shutdown()
     return RMW_RET_ERROR;
   }
 
-  // Undeclare all dynamic subscriptions for Buffer-aware subscriptions
-  for (auto & [key, endpoint] : sub_endpoints_) {
+  for (auto & [key, endpoint] : endpoints_to_destroy) {
     if (endpoint->sub.has_value()) {
       std::move(endpoint->sub.value()).undeclare(&result);
       if (result != Z_OK) {
@@ -779,10 +816,9 @@ rmw_ret_t SubscriptionData::shutdown()
       }
     }
   }
-  sub_endpoints_.clear();
 
-  if (sub_.has_value()) {
-    std::move(sub_.value()).undeclare(&result);
+  if (base_sub.has_value()) {
+    std::move(base_sub.value()).undeclare(&result);
     if (result != Z_OK) {
       RMW_ZENOH_LOG_ERROR_NAMED(
         "rmw_zenoh_cpp",
@@ -793,8 +829,6 @@ rmw_ret_t SubscriptionData::shutdown()
   }
 
   sess_.reset();
-  is_shutdown_ = true;
-  initialized_ = false;
   return ret;
 }
 

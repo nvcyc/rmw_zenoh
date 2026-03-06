@@ -162,8 +162,13 @@ private:
   // Discovery callback for Buffer-aware subscriptions.
   void on_publisher_discovered(const liveliness::Entity & entity);
 
-  // Create a subscription endpoint for a specific key.
+  // Create a subscription endpoint for a specific key (caller must hold mutex_).
   void create_subscription_for_key(
+    const std::string & key,
+    const EndpointInfoStorage & publisher_info);
+
+  // Create a Zenoh subscription endpoint (does not require mutex_).
+  std::shared_ptr<SubscriptionEndpoint> create_subscription_endpoint(
     const std::string & key,
     const EndpointInfoStorage & publisher_info);
 
@@ -207,6 +212,7 @@ private:
   EndpointInfoStorage local_endpoint_info_;
   std::vector<PublisherInfo> discovered_publishers_;
   std::unordered_map<std::string, std::shared_ptr<SubscriptionEndpoint>> sub_endpoints_;
+  std::set<std::string> pending_sub_endpoints_;
 };
 using SubscriptionDataPtr = std::shared_ptr<SubscriptionData>;
 using SubscriptionDataConstPtr = std::shared_ptr<const SubscriptionData>;

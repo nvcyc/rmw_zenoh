@@ -721,12 +721,6 @@ std::shared_ptr<EventsManager> PublisherData::events_mgr() const
 ///=============================================================================
 void PublisherData::on_subscriber_discovered(const liveliness::Entity & entity)
 {
-  std::lock_guard<std::mutex> lock(mutex_);
-
-  if (!is_buffer_aware_) {
-    return;  // Simple publishers don't handle discovery
-  }
-
   if (entity.type() != liveliness::EntityType::Subscription) {
     RMW_ZENOH_RCL_BUFFER_LOG_INFO_NAMED(
       "rmw_zenoh_cpp",
@@ -737,7 +731,6 @@ void PublisherData::on_subscriber_discovered(const liveliness::Entity & entity)
     return;
   }
 
-  // Get subscriber backend info (empty means CPU-only)
   auto topic_info_opt = entity.topic_info();
   if (!topic_info_opt.has_value()) {
     RMW_ZENOH_RCL_BUFFER_LOG_ERROR_NAMED(
@@ -745,13 +738,11 @@ void PublisherData::on_subscriber_discovered(const liveliness::Entity & entity)
       "Discovered subscriber without topic info on Buffer topic");
     return;
   }
-  
-  // Empty or missing backend_aux_info is treated as CPU-only
+
   std::unordered_map<std::string, std::string> sub_backend_aux_info;
   if (topic_info_opt->backend_aux_info_.has_value()) {
     sub_backend_aux_info = topic_info_opt->backend_aux_info_.value();
   }
-  // If empty, it implicitly means CPU backend
 
   auto gid = entity_gid_to_rmw_gid(entity, rmw_zenoh_identifier);
   const auto entity_gid_array = entity.copy_gid();
@@ -769,51 +760,82 @@ void PublisherData::on_subscriber_discovered(const liveliness::Entity & entity)
     gid_to_hex(gid).c_str(),
     gid_array_to_hex(entity_gid_array).c_str());
 
-  // Avoid duplicate registrations
-  for (const auto & existing : discovered_subscribers_) {
-    if (memcmp(existing.gid.data, gid.data, RMW_GID_STORAGE_SIZE) == 0) {
+  auto sub_endpoint_info = build_endpoint_info_from_entity(entity, RMW_ENDPOINT_SUBSCRIPTION);
+
+  // Phase 1: collect state under lock, check duplicates, mark pending
+  std::string full_key;
+  std::vector<rmw_topic_endpoint_info_t> existing_endpoints;
+  std::unordered_map<std::string, std::vector<std::set<uint32_t>>> backend_endpoint_groups;
+  bool need_create_endpoint = false;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!is_buffer_aware_ || is_shutdown_) {
       return;
+    }
+
+    for (const auto & existing : discovered_subscribers_) {
+      if (memcmp(existing.gid.data, gid.data, RMW_GID_STORAGE_SIZE) == 0) {
+        return;
+      }
+    }
+
+    existing_endpoints.reserve(1 + discovered_subscribers_.size());
+    existing_endpoints.push_back(local_endpoint_info_.info);
+    for (const auto & existing : discovered_subscribers_) {
+      existing_endpoints.push_back(existing.endpoint_info.info);
+    }
+
+    for (const auto & existing : discovered_subscribers_) {
+      backend_endpoint_groups.insert(existing.backend_groups.begin(),
+        existing.backend_groups.end());
+    }
+
+    full_key = entity_->topic_info()->topic_keyexpr_ + "/" +
+      entity_->zid() + "/" + gid_to_hex(gid);
+
+    need_create_endpoint = (endpoints_.find(full_key) == endpoints_.end());
+    if (need_create_endpoint) {
+      if (!pending_endpoints_.insert(full_key).second) {
+        return;
+      }
     }
   }
 
-  auto sub_endpoint_info = build_endpoint_info_from_entity(entity, RMW_ENDPOINT_SUBSCRIPTION);
-
-  std::vector<rmw_topic_endpoint_info_t> existing_endpoints;
-  existing_endpoints.reserve(1 + discovered_subscribers_.size());
-  existing_endpoints.push_back(local_endpoint_info_.info);
-  for (const auto & existing : discovered_subscribers_) {
-    existing_endpoints.push_back(existing.endpoint_info.info);
-  }
-
-  std::unordered_map<std::string, std::vector<std::set<uint32_t>>> backend_endpoint_groups;
-  for (const auto & existing : discovered_subscribers_) {
-    backend_endpoint_groups.insert(existing.backend_groups.begin(),
-      existing.backend_groups.end());
-  }
-
+  // Phase 2: external operations without lock
   std::unordered_map<std::string, std::vector<std::set<uint32_t>>> backend_groups;
   rcl_buffer_backend_registry::BufferBackendRegistry::get_instance().notify_endpoint_discovered(
     sub_endpoint_info.info, existing_endpoints, backend_endpoint_groups,
     sub_backend_aux_info);
 
-  std::string full_key = entity_->topic_info()->topic_keyexpr_ + "/" +
-    entity_->zid() + "/" + gid_to_hex(gid);
-
-  if (endpoints_.find(full_key) == endpoints_.end()) {
-    get_or_create_endpoint(full_key);
+  std::shared_ptr<PublisherEndpoint> new_endpoint;
+  if (need_create_endpoint) {
+    new_endpoint = create_publisher_endpoint(full_key);
+    if (!new_endpoint) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      pending_endpoints_.erase(full_key);
+      return;
+    }
   }
 
-  // Track subscriber
-  SubscriberInfo sub_info;
-  sub_info.gid = gid;
-  sub_info.endpoint_key = full_key;
-  sub_info.endpoint_info = std::move(sub_endpoint_info);
-  sub_info.backend_aux_info = sub_backend_aux_info;
-  sub_info.backend_groups = std::move(backend_groups);
-  discovered_subscribers_.push_back(std::move(sub_info));
+  // Phase 3: store results under lock
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (new_endpoint) {
+      endpoints_[full_key] = new_endpoint;
+      pending_endpoints_.erase(full_key);
+    }
 
-  if (endpoints_.count(full_key)) {
-    endpoints_[full_key]->target_subscribers.push_back(gid);
+    SubscriberInfo sub_info;
+    sub_info.gid = gid;
+    sub_info.endpoint_key = full_key;
+    sub_info.endpoint_info = std::move(sub_endpoint_info);
+    sub_info.backend_aux_info = sub_backend_aux_info;
+    sub_info.backend_groups = std::move(backend_groups);
+    discovered_subscribers_.push_back(std::move(sub_info));
+
+    if (endpoints_.count(full_key)) {
+      endpoints_[full_key]->target_subscribers.push_back(gid);
+    }
   }
 }
 
@@ -821,20 +843,27 @@ void PublisherData::on_subscriber_discovered(const liveliness::Entity & entity)
 std::shared_ptr<PublisherData::PublisherEndpoint> PublisherData::get_or_create_endpoint(
   const std::string & full_key)
 {
-  // Check if endpoint already exists
   auto it = endpoints_.find(full_key);
   if (it != endpoints_.end()) {
     return it->second;
   }
 
-  // Create new endpoint
+  auto endpoint = create_publisher_endpoint(full_key);
+  if (endpoint) {
+    endpoints_[full_key] = endpoint;
+  }
+  return endpoint;
+}
+
+///=============================================================================
+std::shared_ptr<PublisherData::PublisherEndpoint> PublisherData::create_publisher_endpoint(
+  const std::string & full_key)
+{
   auto endpoint = std::make_shared<PublisherEndpoint>();
   endpoint->key = full_key;
 
-  // Create Zenoh publisher for this endpoint
   zenoh::KeyExpr pub_ke(full_key);
 
-  // Copy QoS settings from the entity
   auto qos_profile = entity_->topic_info()->qos_;
 
   using AdvancedPublisherOptions = zenoh::ext::SessionExt::AdvancedPublisherOptions;
@@ -870,7 +899,6 @@ std::shared_ptr<PublisherData::PublisherEndpoint> PublisherData::get_or_create_e
   }
 
   endpoint->pub = std::optional<zenoh::ext::AdvancedPublisher>(std::move(pub));
-  endpoints_[full_key] = endpoint;
   return endpoint;
 }
 
@@ -890,15 +918,24 @@ PublisherData::~PublisherData()
 ///=============================================================================
 rmw_ret_t PublisherData::shutdown()
 {
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (is_shutdown_) {
-    return RMW_RET_OK;
+  std::unordered_map<std::string, std::shared_ptr<PublisherEndpoint>> endpoints_to_destroy;
+  bool was_buffer_aware = false;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (is_shutdown_) {
+      return RMW_RET_OK;
+    }
+    is_shutdown_ = true;
+    was_buffer_aware = is_buffer_aware_;
+    if (was_buffer_aware) {
+      endpoints_to_destroy = std::move(endpoints_);
+      endpoints_.clear();
+    }
   }
 
-  // Undeclare all dynamic endpoints for buffer-aware publishers
-  if (is_buffer_aware_) {
+  if (was_buffer_aware) {
     zenoh::ZResult result;
-    for (auto & [key, endpoint] : endpoints_) {
+    for (auto & [key, endpoint] : endpoints_to_destroy) {
       if (endpoint->pub.has_value()) {
         std::move(endpoint->pub.value()).undeclare(&result);
         if (result != Z_OK) {
@@ -908,10 +945,8 @@ rmw_ret_t PublisherData::shutdown()
         }
       }
     }
-    endpoints_.clear();
   }
 
-  // Unregister this publisher from the ROS graph.
   zenoh::ZResult result;
   std::move(token_).value().undeclare(&result);
   if (result != Z_OK) {
@@ -922,8 +957,7 @@ rmw_ret_t PublisherData::shutdown()
     return RMW_RET_ERROR;
   }
 
-  // For simple publishers, undeclare the base publisher
-  if (!is_buffer_aware_) {
+  if (!was_buffer_aware) {
     std::move(pub_).undeclare(&result);
     if (result != Z_OK) {
       RMW_ZENOH_RCL_BUFFER_LOG_ERROR_NAMED(
@@ -935,7 +969,6 @@ rmw_ret_t PublisherData::shutdown()
   }
 
   sess_.reset();
-  is_shutdown_ = true;
   return RMW_RET_OK;
 }
 
