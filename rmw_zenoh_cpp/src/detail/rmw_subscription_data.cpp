@@ -29,7 +29,6 @@
 #include <variant>
 
 #include "attachment_helpers.hpp"
-#include "buffer_backend_loader.hpp"
 #include "cdr.hpp"
 
 #include "rcl_buffer_backend_registry/buffer_backend_registry.hpp"
@@ -593,10 +592,9 @@ void SubscriptionData::on_publisher_discovered(const liveliness::Entity & entity
   }
 
   std::unordered_map<std::string, std::vector<std::set<uint32_t>>> backend_groups;
-  auto backend_compat =
-    rcl_buffer_backend_registry::BufferBackendRegistry::get_instance().notify_endpoint_discovered(
-      pub_endpoint_info.info, existing_endpoints, backend_endpoint_groups,
-      pub_backend_aux_info);
+  rcl_buffer_backend_registry::BufferBackendRegistry::get_instance().notify_endpoint_discovered(
+    pub_endpoint_info.info, existing_endpoints, backend_endpoint_groups,
+    pub_backend_aux_info);
 
   rmw_gid_t local_gid = rmw_zenoh_cpp::entity_gid_to_rmw_gid(
     *entity_, rmw_zenoh_cpp::rmw_zenoh_identifier);
@@ -629,7 +627,6 @@ void SubscriptionData::on_publisher_discovered(const liveliness::Entity & entity
   pub_info.endpoint_key = full_key;
   pub_info.endpoint_info = std::move(pub_endpoint_info);
   pub_info.backend_aux_info = pub_backend_aux_info;
-  pub_info.backend_compat = std::move(backend_compat);
   pub_info.backend_groups = std::move(backend_groups);
   discovered_publishers_.push_back(std::move(pub_info));
 }

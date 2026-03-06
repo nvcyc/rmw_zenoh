@@ -103,7 +103,6 @@ private:
     std::string endpoint_key;
     EndpointInfoStorage endpoint_info;
     std::unordered_map<std::string, std::string> backend_aux_info;
-    std::unordered_map<std::string, bool> backend_compat;
     std::unordered_map<std::string, std::vector<std::set<uint32_t>>> backend_groups;
   };
 

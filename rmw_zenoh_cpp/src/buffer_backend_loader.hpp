@@ -15,9 +15,6 @@
 #ifndef RMW_ZENOH_CPP__BUFFER_BACKEND_LOADER_HPP_
 #define RMW_ZENOH_CPP__BUFFER_BACKEND_LOADER_HPP_
 
-#include <string>
-#include <unordered_map>
-
 namespace rmw_zenoh_cpp
 {
 
@@ -28,33 +25,6 @@ void initialize_buffer_backends();
 /// Cleanup buffer backend system.
 /// Clears global serialization maps to release plugin references before unloading.
 void shutdown_buffer_backends();
-
-/// Set thread-local backend compatibility map for serialization.
-void set_thread_local_backend_compatibility(
-  const std::unordered_map<std::string, bool> * compat_map);
-
-/// Query thread-local backend compatibility for a backend type.
-bool get_thread_local_backend_compatibility(const std::string & backend_type);
-
-/// RAII guard that sets the thread-local backend compatibility map on construction
-/// and clears it on destruction, guaranteeing cleanup even if an exception is thrown.
-class BackendCompatibilityGuard
-{
-public:
-  explicit BackendCompatibilityGuard(
-    const std::unordered_map<std::string, bool> & compat_map)
-  {
-    set_thread_local_backend_compatibility(&compat_map);
-  }
-
-  ~BackendCompatibilityGuard()
-  {
-    set_thread_local_backend_compatibility(nullptr);
-  }
-
-  BackendCompatibilityGuard(const BackendCompatibilityGuard &) = delete;
-  BackendCompatibilityGuard & operator=(const BackendCompatibilityGuard &) = delete;
-};
 
 }  // namespace rmw_zenoh_cpp
 

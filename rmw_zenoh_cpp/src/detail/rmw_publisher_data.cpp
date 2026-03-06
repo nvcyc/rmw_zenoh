@@ -30,7 +30,6 @@
 #include <vector>
 #include <cstdint>
 
-#include "buffer_backend_loader.hpp"
 #include "cdr.hpp"
 
 #include "rcl_buffer_backend_registry/buffer_backend_registry.hpp"
@@ -383,12 +382,8 @@ rmw_ret_t PublisherData::publish_buffer_aware(
     eprosima::fastcdr::FastBuffer fastbuffer(reinterpret_cast<char *>(msg_bytes), max_data_length);
     rmw_zenoh_cpp::Cdr ser(fastbuffer);
 
-    bool ok = false;
-    {
-      rmw_zenoh_cpp::BackendCompatibilityGuard compat_guard(sub.backend_compat);
-      ok = type_support_->serialize_ros_message_with_endpoint(
-        ros_message, ser.get_cdr(), type_support_impl_, sub.endpoint_info.info);
-    }
+    bool ok = type_support_->serialize_ros_message_with_endpoint(
+      ros_message, ser.get_cdr(), type_support_impl_, sub.endpoint_info.info);
     if (!ok) {
       RMW_SET_ERROR_MSG("could not serialize ROS message with endpoint awareness");
       return RMW_RET_ERROR;
@@ -797,10 +792,9 @@ void PublisherData::on_subscriber_discovered(const liveliness::Entity & entity)
   }
 
   std::unordered_map<std::string, std::vector<std::set<uint32_t>>> backend_groups;
-  auto backend_compat =
-    rcl_buffer_backend_registry::BufferBackendRegistry::get_instance().notify_endpoint_discovered(
-      sub_endpoint_info.info, existing_endpoints, backend_endpoint_groups,
-      sub_backend_aux_info);
+  rcl_buffer_backend_registry::BufferBackendRegistry::get_instance().notify_endpoint_discovered(
+    sub_endpoint_info.info, existing_endpoints, backend_endpoint_groups,
+    sub_backend_aux_info);
 
   std::string full_key = entity_->topic_info()->topic_keyexpr_ + "/" +
     entity_->zid() + "/" + gid_to_hex(gid);
@@ -815,7 +809,6 @@ void PublisherData::on_subscriber_discovered(const liveliness::Entity & entity)
   sub_info.endpoint_key = full_key;
   sub_info.endpoint_info = std::move(sub_endpoint_info);
   sub_info.backend_aux_info = sub_backend_aux_info;
-  sub_info.backend_compat = std::move(backend_compat);
   sub_info.backend_groups = std::move(backend_groups);
   discovered_subscribers_.push_back(std::move(sub_info));
 
