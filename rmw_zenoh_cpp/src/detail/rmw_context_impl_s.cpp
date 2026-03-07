@@ -28,7 +28,7 @@
 
 #include <zenoh.hxx>
 
-#include "buffer_backend_loader.hpp"
+#include "rcl_buffer_backend_registry/buffer_backend_loader.hpp"
 #include "graph_cache.hpp"
 #include "guard_condition.hpp"
 #include "identifier.hpp"
@@ -353,7 +353,7 @@ public:
     session_.reset();
 
     // Cleanup buffer backend system before plugins are unloaded
-    rmw_zenoh_cpp::shutdown_buffer_backends();
+    rcl_buffer_backend_registry::shutdown_buffer_backends();
 
     return RMW_RET_OK;
   }

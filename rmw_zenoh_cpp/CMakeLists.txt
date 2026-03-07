@@ -28,7 +28,6 @@ find_package(tracetools REQUIRED)
 find_package(zenoh_cpp_vendor REQUIRED)
 
 add_library(rmw_zenoh_cpp SHARED
-  src/buffer_backend_loader.cpp
   src/detail/attachment_helpers.cpp
   src/detail/cdr.cpp
   src/detail/event.cpp
