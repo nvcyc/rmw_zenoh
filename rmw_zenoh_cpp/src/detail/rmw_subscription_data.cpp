@@ -31,7 +31,7 @@
 #include "attachment_helpers.hpp"
 #include "cdr.hpp"
 
-#include "rcl_buffer_backend_registry/buffer_backend_registry.hpp"
+#include "rosidl_buffer_backend_registry/buffer_backend_registry.hpp"
 #include "identifier.hpp"
 #include "rmw_context_impl_s.hpp"
 #include "message_type_support.hpp"
@@ -141,7 +141,7 @@ std::shared_ptr<SubscriptionData> SubscriptionData::make(
   std::optional<std::unordered_map<std::string, std::string>> backend_types = std::nullopt;
   std::vector<std::string> my_backend_types;
   if (is_buffer_aware) {
-    auto & backend_registry = rcl_buffer_backend_registry::BufferBackendRegistry::get_instance();
+    auto & backend_registry = rosidl_buffer_backend_registry::BufferBackendRegistry::get_instance();
     auto all_installed = backend_registry.get_backend_types();
     auto all_aux_info = backend_registry.get_all_aux_info();
 
@@ -272,7 +272,7 @@ std::shared_ptr<SubscriptionData> SubscriptionData::make(
     sub_data->local_endpoint_info_ =
       build_endpoint_info_from_entity(*sub_data->entity_, RMW_ENDPOINT_SUBSCRIPTION);
 
-    rcl_buffer_backend_registry::BufferBackendRegistry::get_instance().notify_endpoint_created(
+    rosidl_buffer_backend_registry::BufferBackendRegistry::get_instance().notify_endpoint_created(
       sub_data->local_endpoint_info_.info);
   }
 
@@ -507,12 +507,12 @@ SubscriptionData::~SubscriptionData()
 ///=============================================================================
 void SubscriptionData::on_publisher_discovered(const liveliness::Entity & entity)
 {
-  RMW_ZENOH_RCL_BUFFER_LOG_INFO_NAMED(
+  RMW_ZENOH_ROSIDL_BUFFER_LOG_INFO_NAMED(
     "rmw_zenoh_cpp",
     "[Subscription] on_publisher_discovered callback triggered!");
 
   if (entity.type() != liveliness::EntityType::Publisher) {
-    RMW_ZENOH_RCL_BUFFER_LOG_INFO_NAMED(
+    RMW_ZENOH_ROSIDL_BUFFER_LOG_INFO_NAMED(
       "rmw_zenoh_cpp",
       "[Subscription] Ignoring discovered entity type=%s node='%s' ns='%s'",
       entity_type_to_string(entity.type()),
@@ -523,7 +523,7 @@ void SubscriptionData::on_publisher_discovered(const liveliness::Entity & entity
 
   const auto & topic_info = entity.topic_info();
   if (!topic_info.has_value()) {
-    RMW_ZENOH_RCL_BUFFER_LOG_ERROR_NAMED(
+    RMW_ZENOH_ROSIDL_BUFFER_LOG_ERROR_NAMED(
       "rmw_zenoh_cpp",
       "Discovered publisher without topic info on Buffer topic");
     return;
@@ -541,10 +541,10 @@ void SubscriptionData::on_publisher_discovered(const liveliness::Entity & entity
     pub_backends.push_back("cpu");
   }
 
-  if (!rcl_buffer_backend_registry::BufferBackendRegistry::backends_compatible(
+  if (!rosidl_buffer_backend_registry::BufferBackendRegistry::backends_compatible(
       my_backend_types_, pub_backends))
   {
-    RMW_ZENOH_RCL_BUFFER_LOG_INFO_NAMED(
+    RMW_ZENOH_ROSIDL_BUFFER_LOG_INFO_NAMED(
       "rmw_zenoh_cpp",
       "Discovered publisher with incompatible backends, skipping");
     return;
@@ -597,7 +597,7 @@ void SubscriptionData::on_publisher_discovered(const liveliness::Entity & entity
     }
   }
 
-  RMW_ZENOH_RCL_BUFFER_LOG_INFO_NAMED(
+  RMW_ZENOH_ROSIDL_BUFFER_LOG_INFO_NAMED(
     "rmw_zenoh_cpp",
     "[Subscription] Discovered publisher entity keyexpr='%s', "
     "topic='%s', entity.type='%s', node='%s', ns='%s', "
@@ -613,7 +613,7 @@ void SubscriptionData::on_publisher_discovered(const liveliness::Entity & entity
 
   // Phase 2: external operations without lock
   std::unordered_map<std::string, std::vector<std::set<uint32_t>>> backend_groups;
-  rcl_buffer_backend_registry::BufferBackendRegistry::get_instance().notify_endpoint_discovered(
+  rosidl_buffer_backend_registry::BufferBackendRegistry::get_instance().notify_endpoint_discovered(
     pub_endpoint_info.info, existing_endpoints, backend_endpoint_groups,
     pub_backend_aux_info);
 
@@ -665,7 +665,7 @@ SubscriptionData::create_subscription_endpoint(
   zenoh::ZResult result;
   zenoh::KeyExpr sub_ke(key, true, &result);
   if (result != Z_OK) {
-    RMW_ZENOH_RCL_BUFFER_LOG_ERROR_NAMED(
+    RMW_ZENOH_ROSIDL_BUFFER_LOG_ERROR_NAMED(
       "rmw_zenoh_cpp",
       "Unable to create zenoh keyexpr for key: %s", key.c_str());
     return nullptr;
@@ -695,7 +695,7 @@ SubscriptionData::create_subscription_endpoint(
 
   rmw_gid_t publisher_gid = {};
   std::memcpy(publisher_gid.data, publisher_info.info.endpoint_gid, RMW_GID_STORAGE_SIZE);
-  RMW_ZENOH_RCL_BUFFER_LOG_INFO_NAMED(
+  RMW_ZENOH_ROSIDL_BUFFER_LOG_INFO_NAMED(
     "rmw_zenoh_cpp",
     "[Subscription] Creating endpoint for key='%s' (publisher gid=%s)",
     key.c_str(),
@@ -713,7 +713,7 @@ SubscriptionData::create_subscription_endpoint(
         return;
       }
 
-      RMW_ZENOH_RCL_BUFFER_LOG_INFO_NAMED(
+      RMW_ZENOH_ROSIDL_BUFFER_LOG_INFO_NAMED(
         "rmw_zenoh_cpp",
         "[Subscription] Received sample on key='%s' (sample key='%s')",
         key.c_str(),
@@ -721,7 +721,7 @@ SubscriptionData::create_subscription_endpoint(
 
       auto attachment = sample.get_attachment();
       if (!attachment.has_value()) {
-        RMW_ZENOH_RCL_BUFFER_LOG_ERROR_NAMED(
+        RMW_ZENOH_ROSIDL_BUFFER_LOG_ERROR_NAMED(
           "rmw_zenoh_cpp",
           "Unable to obtain attachment for topic '%s'",
           std::string(sample.get_keyexpr().as_string_view()).c_str());
@@ -755,7 +755,7 @@ SubscriptionData::create_subscription_endpoint(
 
   endpoint->sub = std::optional<zenoh::ext::AdvancedSubscriber<void>>(std::move(sub));
 
-  RMW_ZENOH_RCL_BUFFER_LOG_INFO_NAMED(
+  RMW_ZENOH_ROSIDL_BUFFER_LOG_INFO_NAMED(
     "rmw_zenoh_cpp",
     "[Subscription] Created buffer-aware subscription for key: '%s'",
     key.c_str());

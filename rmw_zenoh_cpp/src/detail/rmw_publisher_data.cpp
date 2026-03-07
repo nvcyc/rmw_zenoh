@@ -32,7 +32,7 @@
 
 #include "cdr.hpp"
 
-#include "rcl_buffer_backend_registry/buffer_backend_registry.hpp"
+#include "rosidl_buffer_backend_registry/buffer_backend_registry.hpp"
 #include "identifier.hpp"
 #include "rmw_context_impl_s.hpp"
 #include "message_type_support.hpp"
@@ -125,7 +125,7 @@ std::shared_ptr<PublisherData> PublisherData::make(
 
   bool has_buffer_fields = callbacks->has_buffer_fields;
 
-  RMW_ZENOH_RCL_BUFFER_LOG_INFO_NAMED("rmw_zenoh_cpp",
+  RMW_ZENOH_ROSIDL_BUFFER_LOG_INFO_NAMED("rmw_zenoh_cpp",
     "[PublisherData::make] Creating publisher for topic '%s', "
     "type name '%s', has_buffer_fields: '%d'",
     topic_name.c_str(), message_type_support->get_name(), has_buffer_fields);
@@ -133,7 +133,7 @@ std::shared_ptr<PublisherData> PublisherData::make(
   // Get installed backends info if message type has Buffer fields
   std::unordered_map<std::string, std::string> backend_aux_info;
   if (has_buffer_fields) {
-    backend_aux_info = rcl_buffer_backend_registry::BufferBackendRegistry::get_instance().get_all_aux_info();
+    backend_aux_info = rosidl_buffer_backend_registry::BufferBackendRegistry::get_instance().get_all_aux_info();
   }
 
   // Convert the type hash to a string so that it can be included in
@@ -253,7 +253,7 @@ std::shared_ptr<PublisherData> PublisherData::make(
       build_endpoint_info_from_entity(*pub_data->entity_, RMW_ENDPOINT_PUBLISHER);
 
     // Inform backends AFTER the GID is properly set
-    rcl_buffer_backend_registry::BufferBackendRegistry::get_instance().notify_endpoint_created(
+    rosidl_buffer_backend_registry::BufferBackendRegistry::get_instance().notify_endpoint_created(
       pub_data->local_endpoint_info_.info);
   }
 
@@ -327,7 +327,7 @@ rmw_ret_t PublisherData::publish_buffer_aware(
 {
   (void)shm;  // SHM not currently used for buffer-aware publishing
 
-  RMW_ZENOH_RCL_BUFFER_LOG_INFO_NAMED(
+  RMW_ZENOH_ROSIDL_BUFFER_LOG_INFO_NAMED(
     "rmw_zenoh_cpp",
     "[Publisher] Publishing buffer-aware message for topic '%s' (message type: %s)",
     entity_->topic_info()->name_.c_str(), entity_->topic_info()->type_.c_str());
@@ -348,7 +348,7 @@ rmw_ret_t PublisherData::publish_buffer_aware(
   size_t iteration = 0;
   for (auto & sub : discovered_subscribers_) {
     iteration++;
-    RMW_ZENOH_RCL_BUFFER_LOG_INFO_NAMED(
+    RMW_ZENOH_ROSIDL_BUFFER_LOG_INFO_NAMED(
       "rmw_zenoh_cpp",
       "[Publisher] Processing message for subscriber endpoint %zu/%zu with key='%s'",
       iteration, discovered_subscribers_.size(), sub.endpoint_key.c_str());
@@ -391,7 +391,7 @@ rmw_ret_t PublisherData::publish_buffer_aware(
 
     size_t data_length = ser.get_serialized_data_length();
 
-    RMW_ZENOH_RCL_BUFFER_LOG_INFO_NAMED(
+    RMW_ZENOH_ROSIDL_BUFFER_LOG_INFO_NAMED(
       "rmw_zenoh_cpp",
       "[Publisher] Serialization complete, actual size: %zu bytes (allocated: %zu, usage: %.1f%%)",
       data_length, max_data_length, (data_length * 100.0) / max_data_length);
@@ -414,7 +414,7 @@ rmw_ret_t PublisherData::publish_buffer_aware(
     always_free_data.cancel();  // Zenoh now owns the memory
 
     // Create attachment AFTER serialization
-    RMW_ZENOH_RCL_BUFFER_LOG_INFO_NAMED(
+    RMW_ZENOH_ROSIDL_BUFFER_LOG_INFO_NAMED(
       "rmw_zenoh_cpp",
       "[Publisher] Creating message attachment data");
 
@@ -433,14 +433,14 @@ rmw_ret_t PublisherData::publish_buffer_aware(
 
     zenoh::ZResult result;
     if (endpoint->pub.has_value()) {
-      RMW_ZENOH_RCL_BUFFER_LOG_INFO_NAMED(
+      RMW_ZENOH_ROSIDL_BUFFER_LOG_INFO_NAMED(
         "rmw_zenoh_cpp",
         "[Publisher] Calling Zenoh put");
 
       endpoint->pub.value().put(std::move(payload), std::move(options), &result);
 
       if (result != Z_OK) {
-        RMW_ZENOH_RCL_BUFFER_LOG_ERROR_NAMED(
+        RMW_ZENOH_ROSIDL_BUFFER_LOG_ERROR_NAMED(
           "rmw_zenoh_cpp",
           "Failed to publish to endpoint '%s'", sub.endpoint_key.c_str());
         ret = RMW_RET_ERROR;
@@ -722,7 +722,7 @@ std::shared_ptr<EventsManager> PublisherData::events_mgr() const
 void PublisherData::on_subscriber_discovered(const liveliness::Entity & entity)
 {
   if (entity.type() != liveliness::EntityType::Subscription) {
-    RMW_ZENOH_RCL_BUFFER_LOG_INFO_NAMED(
+    RMW_ZENOH_ROSIDL_BUFFER_LOG_INFO_NAMED(
       "rmw_zenoh_cpp",
       "[Publisher] Ignoring discovered entity type=%s node='%s' ns='%s'",
       entity_type_to_string(entity.type()),
@@ -733,7 +733,7 @@ void PublisherData::on_subscriber_discovered(const liveliness::Entity & entity)
 
   auto topic_info_opt = entity.topic_info();
   if (!topic_info_opt.has_value()) {
-    RMW_ZENOH_RCL_BUFFER_LOG_ERROR_NAMED(
+    RMW_ZENOH_ROSIDL_BUFFER_LOG_ERROR_NAMED(
       "rmw_zenoh_cpp",
       "Discovered subscriber without topic info on Buffer topic");
     return;
@@ -746,7 +746,7 @@ void PublisherData::on_subscriber_discovered(const liveliness::Entity & entity)
 
   auto gid = entity_gid_to_rmw_gid(entity, rmw_zenoh_identifier);
   const auto entity_gid_array = entity.copy_gid();
-  RMW_ZENOH_RCL_BUFFER_LOG_INFO_NAMED(
+  RMW_ZENOH_ROSIDL_BUFFER_LOG_INFO_NAMED(
     "rmw_zenoh_cpp",
     "[Publisher] Discovered subscriber entity keyexpr='%s', "
     "topic='%s', entity.type='%s', node='%s', ns='%s', "
@@ -803,7 +803,7 @@ void PublisherData::on_subscriber_discovered(const liveliness::Entity & entity)
 
   // Phase 2: external operations without lock
   std::unordered_map<std::string, std::vector<std::set<uint32_t>>> backend_groups;
-  rcl_buffer_backend_registry::BufferBackendRegistry::get_instance().notify_endpoint_discovered(
+  rosidl_buffer_backend_registry::BufferBackendRegistry::get_instance().notify_endpoint_discovered(
     sub_endpoint_info.info, existing_endpoints, backend_endpoint_groups,
     sub_backend_aux_info);
 
@@ -892,7 +892,7 @@ std::shared_ptr<PublisherData::PublisherEndpoint> PublisherData::create_publishe
       pub_ke, std::move(adv_pub_opts), &result);
 
   if (result != Z_OK) {
-    RMW_ZENOH_RCL_BUFFER_LOG_ERROR_NAMED(
+    RMW_ZENOH_ROSIDL_BUFFER_LOG_ERROR_NAMED(
       "rmw_zenoh_cpp",
       "Failed to create dynamic endpoint for key: %s", full_key.c_str());
     return nullptr;
@@ -939,7 +939,7 @@ rmw_ret_t PublisherData::shutdown()
       if (endpoint->pub.has_value()) {
         std::move(endpoint->pub.value()).undeclare(&result);
         if (result != Z_OK) {
-          RMW_ZENOH_RCL_BUFFER_LOG_ERROR_NAMED(
+          RMW_ZENOH_ROSIDL_BUFFER_LOG_ERROR_NAMED(
             "rmw_zenoh_cpp",
           "Failed to undeclare endpoint with key '%s'", key.c_str());
         }
@@ -960,7 +960,7 @@ rmw_ret_t PublisherData::shutdown()
   if (!was_buffer_aware) {
     std::move(pub_).undeclare(&result);
     if (result != Z_OK) {
-      RMW_ZENOH_RCL_BUFFER_LOG_ERROR_NAMED(
+      RMW_ZENOH_ROSIDL_BUFFER_LOG_ERROR_NAMED(
         "rmw_zenoh_cpp",
         "Unable to undeclare the publisher for topic '%s'",
         entity_->topic_info().value().name_.c_str());
