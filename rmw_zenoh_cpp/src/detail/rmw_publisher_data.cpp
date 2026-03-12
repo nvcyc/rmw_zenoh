@@ -133,7 +133,12 @@ std::shared_ptr<PublisherData> PublisherData::make(
   // Get installed backends info if message type has Buffer fields
   std::unordered_map<std::string, std::string> backend_aux_info;
   if (has_buffer_fields) {
-    backend_aux_info = rosidl_buffer_backend_registry::BufferBackendRegistry::get_instance().get_all_aux_info();
+    backend_aux_info =
+      rosidl_buffer_backend_registry::BufferBackendRegistry::get_instance().get_all_aux_info();
+    // CPU serialization is always implicitly supported by buffer-aware publishers.
+    if (backend_aux_info.find("cpu") == backend_aux_info.end()) {
+      backend_aux_info["cpu"] = "";
+    }
   }
 
   // Convert the type hash to a string so that it can be included in
@@ -462,9 +467,29 @@ rmw_ret_t PublisherData::publish(
     return RMW_RET_ERROR;
   }
 
-  // Buffer-aware publishers use different logic
+  // Buffer-aware publishers: send endpoint-aware messages to per-subscriber
+  // endpoints, then conditionally fall through to the standard path to also
+  // publish on the base key.  Buffer-aware subscribers only listen on
+  // per-publisher key expressions, so the base publication only reaches
+  // non-buffer-aware subscribers (no duplicates).
+  //
+  // We only fall through when the total matched subscription count exceeds
+  // the number of discovered buffer-aware subscribers, meaning at least one
+  // non-buffer-aware subscriber exists.  This avoids an unnecessary CPU
+  // conversion (to_vector()) of vendor-backed buffer data on every publish.
   if (is_buffer_aware_) {
-    return publish_buffer_aware(ros_message, shm);
+    rmw_ret_t buf_ret = publish_buffer_aware(ros_message, shm);
+    if (buf_ret != RMW_RET_OK) {
+      return buf_ret;
+    }
+    size_t total_matched = 0;
+    if (graph_cache_) {
+      graph_cache_->publisher_count_matched_subscriptions(
+        entity_->topic_info().value(), &total_matched);
+    }
+    if (total_matched <= discovered_subscribers_.size()) {
+      return RMW_RET_OK;
+    }
   }
 
   // Serialize data.
@@ -957,15 +982,17 @@ rmw_ret_t PublisherData::shutdown()
     return RMW_RET_ERROR;
   }
 
-  if (!was_buffer_aware) {
-    std::move(pub_).undeclare(&result);
-    if (result != Z_OK) {
-      RMW_ZENOH_ROSIDL_BUFFER_LOG_ERROR_NAMED(
-        "rmw_zenoh_cpp",
-        "Unable to undeclare the publisher for topic '%s'",
-        entity_->topic_info().value().name_.c_str());
-      return RMW_RET_ERROR;
-    }
+  // For buffer-aware publishers, pub_ is the base publisher used for
+  // fallback/standard serialization and was never moved.
+  // For non-buffer-aware publishers, pub_ was moved into the base endpoint
+  // but still needs to be undeclared.
+  std::move(pub_).undeclare(&result);
+  if (result != Z_OK) {
+    RMW_ZENOH_ROSIDL_BUFFER_LOG_ERROR_NAMED(
+      "rmw_zenoh_cpp",
+      "Unable to undeclare the publisher for topic '%s'",
+      entity_->topic_info().value().name_.c_str());
+    return RMW_RET_ERROR;
   }
 
   sess_.reset();
