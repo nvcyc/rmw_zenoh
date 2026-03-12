@@ -147,22 +147,55 @@ std::shared_ptr<SubscriptionData> SubscriptionData::make(
 
     const char * requested = sub_options.acceptable_buffer_backends;
 
+    // Parse comma-separated list (if provided and non-empty)
+    std::vector<std::string> requested_list;
     if (requested != nullptr && strlen(requested) > 0) {
-      // Parse comma-separated list of acceptable backends
-      std::vector<std::string> requested_list;
-      {
-        std::istringstream stream(requested);
-        std::string token;
-        while (std::getline(stream, token, ',')) {
-          // Trim whitespace
-          size_t start = token.find_first_not_of(" \t");
-          size_t end = token.find_last_not_of(" \t");
-          if (start != std::string::npos) {
-            requested_list.push_back(token.substr(start, end - start + 1));
-          }
+      std::istringstream stream(requested);
+      std::string token;
+      while (std::getline(stream, token, ',')) {
+        size_t start = token.find_first_not_of(" \t");
+        size_t end = token.find_last_not_of(" \t");
+        if (start != std::string::npos) {
+          requested_list.push_back(token.substr(start, end - start + 1));
         }
       }
+    }
 
+    // "any": accept all installed backends
+    bool use_all = false;
+    for (const auto & name : requested_list) {
+      if (name == "any") {
+        use_all = true;
+        break;
+      }
+    }
+
+    // NULL, empty, or only "cpu" entries: CPU-only (backward compat default)
+    bool cpu_only = !use_all && (requested_list.empty() ||
+      std::all_of(requested_list.begin(), requested_list.end(),
+      [](const std::string & n) {return n == "cpu";}));
+
+    if (use_all) {
+      my_backend_types = all_installed;
+      backend_types = all_aux_info;
+
+      RMW_ZENOH_LOG_DEBUG_NAMED(
+        "rmw_zenoh_cpp",
+        "Creating Buffer-aware subscription for topic %s with %zu backends (all installed)",
+        topic_name.c_str(), my_backend_types.size());
+    } else if (cpu_only) {
+      // CPU-only: advertise "cpu" as the only supported backend so the
+      // subscription stays on the buffer-aware per-endpoint route and
+      // passes the backends_compatible check with CPU-only publishers.
+      my_backend_types.push_back("cpu");
+      backend_types = std::unordered_map<std::string, std::string>{{"cpu", ""}};
+
+      RMW_ZENOH_LOG_DEBUG_NAMED(
+        "rmw_zenoh_cpp",
+        "Creating CPU-only Buffer subscription for topic %s "
+        "(acceptable_buffer_backends='%s')",
+        topic_name.c_str(), requested ? requested : "(null)");
+    } else {
       // Validate: every requested non-CPU backend must be installed
       for (const auto & name : requested_list) {
         if (name == "cpu") {
@@ -203,15 +236,6 @@ std::shared_ptr<SubscriptionData> SubscriptionData::make(
         "Creating subscription for topic %s with %zu filtered backends "
         "(from acceptable_buffer_backends='%s')",
         topic_name.c_str(), my_backend_types.size(), requested);
-    } else {
-      // Default: all installed backends
-      my_backend_types = all_installed;
-      backend_types = all_aux_info;
-
-      RMW_ZENOH_LOG_DEBUG_NAMED(
-        "rmw_zenoh_cpp",
-        "Creating Buffer-aware subscription for topic %s with %zu backends (all installed)",
-        topic_name.c_str(), my_backend_types.size());
     }
   }
 
@@ -533,13 +557,13 @@ void SubscriptionData::on_publisher_discovered(const liveliness::Entity & entity
   std::vector<std::string> pub_backends;
   if (topic_info->backend_aux_info_.has_value() && !topic_info->backend_aux_info_->empty()) {
     pub_backend_aux_info = topic_info->backend_aux_info_.value();
-    pub_backends.reserve(pub_backend_aux_info.size());
+    pub_backends.reserve(pub_backend_aux_info.size() + 1);
     for (const auto & pair : pub_backend_aux_info) {
       pub_backends.push_back(pair.first);
     }
-  } else {
-    pub_backends.push_back("cpu");
   }
+  // CPU serialization is always implicitly supported by all buffer-aware publishers
+  pub_backends.push_back("cpu");
 
   if (!rosidl_buffer_backend_registry::BufferBackendRegistry::backends_compatible(
       my_backend_types_, pub_backends))
